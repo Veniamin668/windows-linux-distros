@@ -5,7 +5,7 @@ on:
   
 jobs:
   test-cloud-pc-auto:
-    runs-on: windows-2022
+    runs-on: windows-latest
     timeout-minutes: 420
 
     steps:
