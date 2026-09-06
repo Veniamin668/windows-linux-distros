@@ -6,7 +6,7 @@ on:
 jobs:
   test-cloud-pc-auto:
     runs-on: windows-latest
-    timeout-minutes: 420
+    timeout-minutes: 361
 
     steps:
       - name: Checkout Repository
@@ -17,8 +17,8 @@ jobs:
         env:
          TAIL_KEY: ${{ secrets.TAIL_KEY }}
          ADMIN_PASS: ${{ secrets.ADMIN_PASS }}
-         USE_CUSTOM_USER: 'true'
-         CUSTOM_USERNAME: 'ktoya'
+         USE_CUSTOM_USER: 'false'
+         CUSTOM_USERNAME: ''
          CUSTOM_PASSWORD: ${{ secrets.CUSTOM_PASSWORD }}
 
       - name: Purge Windows Bloat
@@ -26,9 +26,9 @@ jobs:
         with:
           enable: 'true'
           
-      - name: 4. wait session (7 hours)
+      - name: 4. wait session (6 hours)
         run: |
-          Write-Host "Cloud PC запущен и ждет тебя в сети! Не закрывай этот воркфлоу."
+          Write-Host "Cloud PC дрочилка запущена и ждет тебя в сети! Не закрывай этот воркфлоу."
           while ($true) {
               Start-Sleep -Seconds 60
           }
