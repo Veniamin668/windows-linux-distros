@@ -6,7 +6,7 @@ on:
 jobs:
   test-cloud-pc-auto:
     runs-on: windows-latest
-    timeout-minutes: 361
+    timeout-minutes: 375
 
     steps:
       - name: Checkout Repository
