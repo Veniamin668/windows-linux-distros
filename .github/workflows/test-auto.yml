@@ -6,7 +6,7 @@ on:
 jobs:
   test-cloud-pc-auto:
     runs-on: windows-latest
-    timeout-minutes: 375
+    timeout-minutes: 365
 
     steps:
       - name: Checkout Repository
@@ -22,7 +22,7 @@ jobs:
          CUSTOM_PASSWORD: ${{ secrets.CUSTOM_PASSWORD }}
 
       - name: Purge Windows Bloat
-        uses: Veniamin668/windows-debloater-runner@test2
+        uses: Veniamin668/windows-debloater-runner@test
         with:
           enable: 'true'
           
