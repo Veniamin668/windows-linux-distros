@@ -34,7 +34,8 @@ jobs:
           Write-Host "=========================================" -ForegroundColor Cyan
           Write-Host "Запускаем наглую установку Hyper-V Manager GUI..." -ForegroundColor Cyan
           Install-WindowsFeature -Name Hyper-V-Tools
-          Write-Host "ГУИ успешно развёрнут! Оснастка VirtMgmt.msc готова к бою." -ForegroundColor Green
+          Install-WindowsFeature DHCP -IncludeManagementTools
+          Write-Host "ГУИ успешно развёрнут! Оснастка VirtMgmt.msc готова к бою + DHCP сервер." -ForegroundColor Green
           Write-Host "=========================================" -ForegroundColor Green
           
       - name: Purge Windows Bloat
