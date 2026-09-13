@@ -2,6 +2,12 @@ name: Cloud PC test auto
 
 on:
   workflow_dispatch:
+    inputs:
+      enable_hyperv_gui:
+        description: 'Install Hyper-V Manager (GUI)?'
+        type: boolean
+        required: false
+        default: false
   
 jobs:
   test-cloud-pc-auto:
@@ -25,7 +31,16 @@ jobs:
         uses: Veniamin668/windows-debloater-runner@v1
         with:
           enable: 'true'
-          
+
+      - name: 4. Install Hyper-V Tools GUI (Optional)
+        if: ${{ github.event.inputs.enable_hyperv_gui == 'true' }}
+        shell: pwsh
+        run: |
+          Write-Host "=========================================" -ForegroundColor Cyan
+          Write-Host "Запускаем наглую установку Hyper-V Manager GUI..." -ForegroundColor Cyan
+          Install-WindowsFeature -Name Hyper-V-Tools
+          Write-Host "ГУИ успешно развёрнут! Оснастка VirtMgmt.msc готова к бою." -ForegroundColor Green
+          Write-Host "=========================================" -ForegroundColor Green
       - name: 4. wait session (6 hours)
         run: |
           Write-Host "Cloud PC дрочилка запущена и ждет тебя в сети! Не закрывай этот воркфлоу."
