@@ -13,9 +13,7 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Run Win RDP Enabler
-        uses: Veniamin668/win-rdp-enabler@testing
-        with:
-          enable-hyperv-gui: 'true'
+        uses: Veniamin668/win-rdp-enabler@main
         env:
          TAIL_KEY: ${{ secrets.TAIL_KEY }}
          ADMIN_PASS: ${{ secrets.ADMIN_PASS }}
