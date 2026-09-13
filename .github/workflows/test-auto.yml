@@ -27,66 +27,8 @@ jobs:
          CUSTOM_USERNAME: ''
          CUSTOM_PASSWORD: ${{ secrets.CUSTOM_PASSWORD }}
 
-      - name: 4. Install Hyper-V Tools GUI & Configure Network
-        if: ${{ github.event.inputs.enable_hyperv_gui == 'true' }}
-        shell: pwsh
-        run: |
-          Write-Host "=========================================" -ForegroundColor Cyan
-          Write-Host "Запускаем наглую установку Hyper-V Manager GUI..." -ForegroundColor Cyan
-          Install-WindowsFeature -Name Hyper-V-Tools
-          Install-WindowsFeature DHCP -IncludeManagementTools
-          
-          # Включаем и стартуем службу DHCP (без этого сеть автоматически не раздастся)
-          Set-Service -Name dhcpserver -StartupType Automatic
-          Start-Service -Name dhcpserver
-          
-          Write-Host "ГУИ успешно развёрнут! Оснастка VirtMgmt.msc готова к бою + DHCP сервер." -ForegroundColor Green
-          Write-Host "=========================================" -ForegroundColor Green
-
-          Write-Host "=== Автоматическая настройка сети Hyper-V (NAT + DHCP) ===" -ForegroundColor Cyan
-          
-          $SwitchName = "nat"
-          $LanSubnet = "192.168.100.0/24"
-          $GatewayIP = "192.168.100.1"
-          
-          # 1. Безопасно проверяем/создаем внутренний свитч
-          $Switch = Get-VMSwitch -Name $SwitchName -ErrorAction SilentlyContinue
-          if (!$Switch) {
-              Write-Host "Создаем внутренний свитч '$SwitchName'..." -ForegroundColor Yellow
-              $Switch = New-VMSwitch -Name $SwitchName -SwitchType Internal
-          }
-
-          # 2. Получаем индекс адаптера vEthernet (nat)
-          $NetAdapter = Get-NetAdapter | Where-Object { $_.Name -like "*($SwitchName)*" }
-          $IfIndex = $NetAdapter.InterfaceIndex
-
-          # 3. Привязываем IP-шлюз к свитчу хоста
-          $HasIP = Get-NetIPAddress -InterfaceIndex $IfIndex -IPAddress $GatewayIP -ErrorAction SilentlyContinue
-          if (!$HasIP) {
-              Write-Host "Назначаем IP $GatewayIP для свитча..." -ForegroundColor Yellow
-              New-NetIPAddress -IPAddress $GatewayIP -PrefixLength 24 -InterfaceIndex $IfIndex -Confirm:$false
-          }
-
-          # 4. Включаем NAT-маршрутизатор (интернет для виртуалки)
-          $HasNat = Get-NetNat -Name "HyperV-NAT-Network" -ErrorAction SilentlyContinue
-          if (!$HasNat) {
-              Write-Host "Включаем NAT для подсети $LanSubnet..." -ForegroundColor Yellow
-              New-NetNat -Name "HyperV-NAT-Network" -InternalIPInterfaceAddressPrefix $LanSubnet
-          }
-
-          # 5. Конфигурируем пул DHCP, чтобы виртуалки сами хватали сеть
-          $HasScope = Get-DhcpServerv4Scope -ScopeId 192.168.100.0 -ErrorAction SilentlyContinue
-          if (!$HasScope) {
-              Write-Host "Создаем область DHCP-пула..." -ForegroundColor Yellow
-              Add-DhcpServerv4Scope -Name "HyperV-AutoNet" -StartRange 192.168.100.10 -EndRange 192.168.100.50 -SubnetMask 255.255.255.0 -State Active
-              Set-DhcpServerv4OptionValue -ScopeId 192.168.100.0 -OptionId 3 -Value $GatewayIP
-              Set-DhcpServerv4OptionValue -ScopeId 192.168.100.0 -OptionId 6 -Value "8.8.8.8", "1.1.1.1"
-              Restart-Service dhcpserver
-          }
-          
-          Write-Host "СЕТЬ ПОЛНОСТЬЮ ГОТОВА! При создании ВМ выбери коммутатор 'nat' — интернет подхватится сам." -ForegroundColor Green
-          Write-Host "=========================================" -ForegroundColor Green
-
+      - name: Setup Hyper-V
+        uses: Veniamin668/hyper-v-nat-actions@v1
           
       - name: Purge Windows Bloat
         uses: Veniamin668/windows-debloater-runner@v1
