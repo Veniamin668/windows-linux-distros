@@ -59,7 +59,7 @@ jobs:
         # (Very) Optional, allows to load older Hyper-V commandlet versions (e.g. Win 2012 support)
           hyperv_psmoduleversion: 2.0
         # Optional, use PowerShell Core instead of Windows PowerShell, default: true
-          pwshcore: true
+          pwshcore: false
   
     
       - name: Purge Windows Bloat
