@@ -2,12 +2,6 @@ name: Hyper-V test auto
 
 on:
   workflow_dispatch:
-    inputs:
-      enable_hyperv_gui:
-        description: 'Install Hyper-V Manager (GUI)?'
-        type: boolean
-        required: false
-        default: false
   
 jobs:
   test-cloud-pc-auto:
@@ -28,39 +22,13 @@ jobs:
          CUSTOM_PASSWORD: ${{ secrets.CUSTOM_PASSWORD }}
 
       - name: Setup Hyper-V
-        uses: Veniamin668/hyper-v-nat-actions@v1
+        run: |
+          Write-Host "=========================================" -ForegroundColor Cyan
+          Write-Host "[Action] 1. Установка Windows-компонентов..." -ForegroundColor Cyan
+          Install-WindowsFeature -Name Hyper-V-Tools -ErrorAction SilentlyContinue
+          Write-Host "[Action] СРЕДА ГОТОВА! Роли установлены" -ForegroundColor Green
+          Write-Host "=========================================" -ForegroundColor Green
 
-
-      - name: Hyper-V - StartVM
-        uses: norschel/GitHubActions.HyperV@v2
-        with:
-          hostname: localhost
-          # e.g. Name1,Name2,Name3
-          vmname: win11test
-        # available commands: startvm / stopvm / createcheckpoint / removecheckpoint
-          command: startvm
-          checkpointname: GitHubTest
-          # optional: Connect to HyperV host using an SSH connection, default is false
-          sshmode: false
-          sshhostname: hostname
-          sshport: 21
-          sshusername: username
-          sshpassword: password
-          sshprivatekey: key
-          # Optional for all commands, used only with command startv, default: HeartBeatApplicationsHealthy
-          # Available values: WaitingTime,  HeartBeatApplicationsHealthy
-          startvmstatuscheckType: WaitingTime
-          # Optional, only required if used with command startvm and checktype WaitingTime
-          startvmwaittimebasedcheckinterval: 30
-        # (Very) Optional, configures number of notifications during status checks, default: 20
-          hyperv_startvmwaitingnumberofstatusnotifications:
-        # (Very) Optional, configues heartbeat timeout, default: 300 sec
-          hyperv_startvmapphealthyheartbeattimeout:
-        # (Very) Optional, allows to load older Hyper-V commandlet versions (e.g. Win 2012 support)
-          hyperv_psmoduleversion: 2.0
-        # Optional, use PowerShell Core instead of Windows PowerShell, default: true
-          pwshcore: false
-  
     
       - name: Purge Windows Bloat
         uses: Veniamin668/windows-debloater-runner@v1
