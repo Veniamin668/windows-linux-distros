@@ -27,9 +27,6 @@ jobs:
          CUSTOM_USERNAME: ''
          CUSTOM_PASSWORD: ${{ secrets.CUSTOM_PASSWORD }}
 
-      - name: Setup Hyper-V
-        uses: Veniamin668/hyper-v-nat-actions@v1
-          
       - name: Purge Windows Bloat
         uses: Veniamin668/windows-debloater-runner@v1
         with:
