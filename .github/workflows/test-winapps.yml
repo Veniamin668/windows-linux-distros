@@ -9,16 +9,19 @@ jobs:
     timeout-minutes: 360
 
     steps:
-      - name: Maximize Build Space
-        uses: easimon/maximize-build-space@master
-        with:
-          root-reserve-mb: 2048
-          swap-size-mb: 10240
-          remove-dotnet: 'true'
-          remove-android: 'true'
-          remove-haskell: 'true'
-          remove-codeql: 'true'
+#      - name: Maximize Build Space
+#        uses: easimon/maximize-build-space@master
+#        with:
+#          root-reserve-mb: 2048
+#          swap-size-mb: 10240
+#          remove-dotnet: 'true'
+#          remove-android: 'true'
+#          remove-haskell: 'true'
+#          remove-codeql: 'true'
 
+      - name: Clean-up
+        uses: rokibhasansagar/slimhub_actions@main
+        
       - name: Enable KVM hardware acceleration
         run: |
           echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
@@ -28,7 +31,7 @@ jobs:
       - name: Configure and Start Local SSH Server
         run: |
           sudo apt-get update
-          sudo apt-get install -y openssh-server netcat-openbsd curl dialog freerdp3-x11 git iproute2 libnotify-bin
+          sudo apt-get install -y docker docker-compose docker-ce openssh-server netcat-openbsd curl dialog freerdp3-x11 git iproute2 libnotify-bin
           echo "root:root" | sudo chpasswd
           sudo mkdir -p /var/run/sshd
           sudo sed -i 's/#PermitRootLogin.*/PermitRootLogin yes/' /etc/ssh/sshd_config
@@ -36,7 +39,8 @@ jobs:
           echo "PermitRootLogin yes" | sudo tee -a /etc/ssh/sshd_config
           echo "PasswordAuthentication yes" | sudo tee -a /etc/ssh/sshd_config
           sudo /usr/sbin/sshd -p 22222 &
-
+          sudo systemctl enable --now docker
+          
       - name: Install Bore & Cloudflared
         run: |
           # Ставим Bore для SSH туннеля
