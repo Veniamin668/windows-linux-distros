@@ -54,9 +54,10 @@ jobs:
       - name: Start Windows Container (Using your exact command structure)
         env: 
           ADMIN_PASS: ${{ secrets.PASS }} 
-          
         run: |
+              cd /home/runner/
               wget -O CPC.iso "https://archive.org/download/WindowsCPC/26100.2314.241105-1703.GE_RELEASE_SVC_PROD1_CLIENTWNC_RET_X64FRE_EN-US.ISO"
+              cd /home/runner/work/
               git clone https://github.com/Veniamin668/winapps.git --depth 1 
               cd winapps
               docker compose -f compose.yaml up -d
