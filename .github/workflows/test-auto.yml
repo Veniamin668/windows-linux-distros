@@ -16,8 +16,8 @@ jobs:
       - name: configure Pagefile
         uses: al-cheb/configure-pagefile-action@v1.2
         with:
-          minimum-size: 8GB
-          maximum-size: 8GB
+          minimum-size: 4GB
+          maximum-size: 4GB
           disk-root: "D:"
         
       - name: Run Win RDP Enabler
