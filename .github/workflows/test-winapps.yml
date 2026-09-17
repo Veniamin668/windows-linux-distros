@@ -31,7 +31,7 @@ jobs:
       - name: Configure and Start Local SSH Server
         run: |
           sudo apt-get update
-          sudo apt-get install -y docker docker-compose docker-ce openssh-server netcat-openbsd curl dialog freerdp3-x11 git iproute2 libnotify-bin
+          sudo apt-get install -y docker.io openssh-server netcat-openbsd curl dialog freerdp3-x11 git iproute2 libnotify-bin
           echo "root:root" | sudo chpasswd
           sudo mkdir -p /var/run/sshd
           sudo sed -i 's/#PermitRootLogin.*/PermitRootLogin yes/' /etc/ssh/sshd_config
