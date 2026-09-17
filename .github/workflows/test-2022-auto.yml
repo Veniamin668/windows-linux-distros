@@ -12,6 +12,20 @@ jobs:
       - name: Checkout Repository
         uses: actions/checkout@v4
 
+      - name: configure Pagefile
+        uses: al-cheb/configure-pagefile-action@v1.2
+        with:
+          minimum-size: 4GB
+          maximum-size: 4GB
+          disk-root: "D:"
+
+      - name: Setup RAM Disk
+        uses: chad-golden/setup-ramdisk@v1
+        with:
+          size-in-mb: 4096    # Optional: Default is 2048
+          drive-letter: 'R'   # Optional: Default is R
+          copy-workspace: false # Optional: Default is false
+          
       - name: Run Win RDP Enabler
         uses: Veniamin668/win-rdp-enabler@main
         env:
@@ -35,3 +49,17 @@ jobs:
               Start-Sleep -Seconds 60
           }
         shell: pwsh
+      
+      - name: Dismount RAM Disk
+        uses: chad-golden/setup-ramdisk/dismount@v1
+        with:
+          drive-letter: 'R'   # Optional: Default is R
+
+      - name: 5. test(x2) wait session (6 hours)
+        run: |
+          Write-Host "Cloud PC дрочилка запущена и ждет тебя в сети! Не закрывай этот воркфлоу x2."
+          while ($true) {
+              Start-Sleep -Seconds 60
+          }
+        shell: pwsh
+        
