@@ -1,4 +1,4 @@
-name: Cloud PC test auto
+name: 11 ARM64 test auto
 
 on:
   workflow_dispatch:
