@@ -62,6 +62,7 @@ jobs:
             -e "RAM_SIZE=12G" \
             -p 8006:8006 \
             -v "${PWD:-.}/windows:/storage" \
+            -v "${PWD:-.}/tpm:/var/lib/swtpm" \
             --stop-timeout 120 \
             docker.io/dockurr/windows
 
