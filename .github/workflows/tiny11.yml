@@ -54,6 +54,7 @@ jobs:
             --device=/dev/kvm \
             --device=/dev/net/tun \
             --cap-add NET_ADMIN \
+            -e "CPU_FLAGS=host" \
             -e "VERSION=tiny11" \
             -e "RAM_SIZE=12G" \
             -e "NETWORK=e1000" \
