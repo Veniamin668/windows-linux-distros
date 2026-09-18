@@ -1,0 +1,59 @@
+name: Cloud PC test auto
+
+on:
+  workflow_dispatch:
+  
+jobs:
+  test-cloud-pc-auto:
+    runs-on: windows-11-arm
+    timeout-minutes: 365
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+
+      - name: configure Pagefile
+        uses: al-cheb/configure-pagefile-action@v1.2
+        with:
+          minimum-size: 4GB
+          maximum-size: 4GB
+          disk-root: "D:"
+
+#      - name: Setup RAM Disk
+#        uses: chad-golden/setup-ramdisk@main
+#        with:
+#          size-in-mb: 4096    # Optional: Default is 2048
+#          drive-letter: 'R'   # Optional: Default is R
+#          copy-workspace: false # Optional: Default is false
+          
+      - name: Run Win RDP Enabler
+        uses: Veniamin668/win-rdp-enabler@main
+        env:
+         TAIL_KEY: ${{ secrets.TAIL_KEY }}
+         ADMIN_PASS: ${{ secrets.ADMIN_PASS }}
+         USE_CUSTOM_USER: 'false'
+         CUSTOM_USERNAME: ''
+         CUSTOM_PASSWORD: ${{ secrets.CUSTOM_PASSWORD }}
+
+      - name: Purge Windows Bloat
+        uses: Veniamin668/windows-debloater-runner@v3
+        with:
+          enable: 'false'
+          azure-del: 'false'
+          choco-del: 'false'
+
+      - name: 4. wait session (6 hours)
+        run: |
+          Write-Host "Cloud PC дрочилка запущена и ждет тебя в сети! Не закрывай этот воркфлоу."
+          while ($true) {
+              Start-Sleep -Seconds 60
+          }
+        shell: pwsh
+        
+#      - name: Dismount RAM Disk
+#        uses: chad-golden/setup-ramdisk/dismount@main
+#        with:
+#          drive-letter: 'R'   # Optional: Default is R
+
+        
