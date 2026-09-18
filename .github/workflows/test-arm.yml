@@ -39,9 +39,9 @@ jobs:
       - name: Purge Windows Bloat
         uses: Veniamin668/windows-debloater-runner@v3
         with:
-          enable: 'false'
-          azure-del: 'false'
-          choco-del: 'false'
+          enable: 'true'
+          azure-del: 'true'
+          choco-del: 'true'
 
       - name: 4. wait session (6 hours)
         run: |
