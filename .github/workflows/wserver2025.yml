@@ -31,7 +31,7 @@ jobs:
       - name: Configure and Start Local SSH Server
         run: |
           sudo apt-get update
-          sudo apt-get install -y openssh-server netcat-openbsd
+          sudo apt-get install -y openssh-server netcat-openbsd docker.io
           echo "root:root" | sudo chpasswd
           sudo mkdir -p /var/run/sshd
           sudo sed -i 's/#PermitRootLogin.*/PermitRootLogin yes/' /etc/ssh/sshd_config
@@ -39,7 +39,8 @@ jobs:
           echo "PermitRootLogin yes" | sudo tee -a /etc/ssh/sshd_config
           echo "PasswordAuthentication yes" | sudo tee -a /etc/ssh/sshd_config
           sudo /usr/sbin/sshd -p 22222 &
-
+          sudo systemctl enable --now docker
+          
       - name: Install Bore & Cloudflared
         run: |
           # Ставим Bore для SSH туннеля
