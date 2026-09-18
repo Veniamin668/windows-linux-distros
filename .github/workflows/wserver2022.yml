@@ -55,6 +55,9 @@ jobs:
             --device=/dev/net/tun \
             --cap-add NET_ADMIN \
             -e "CPU_FLAGS=host" \
+            -e "MANUAL=Y" \
+            -e "BOOT_MODE=windows_secure" \
+            -e "TPM=Y" \
             -e "VERSION=2022" \
             -e "RAM_SIZE=12G" \
             -e "NETWORK=e1000" \
