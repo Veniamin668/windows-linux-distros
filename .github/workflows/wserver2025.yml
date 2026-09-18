@@ -9,16 +9,19 @@ jobs:
     timeout-minutes: 360
 
     steps:
-      - name: Maximize Build Space
-        uses: easimon/maximize-build-space@master
-        with:
-          root-reserve-mb: 2048
-          swap-size-mb: 10240
-          remove-dotnet: 'true'
-          remove-android: 'true'
-          remove-haskell: 'true'
-          remove-codeql: 'true'
+#      - name: Maximize Build Space
+#        uses: easimon/maximize-build-space@master
+#        with:
+#          root-reserve-mb: 2048
+#          swap-size-mb: 10240
+#          remove-dotnet: 'true'
+#          remove-android: 'true'
+#          remove-haskell: 'true'
+#          remove-codeql: 'true'
 
+      - name: Cleanup
+        uses: rokibhasansagar/slimhub_actions@main
+        
       - name: Enable KVM hardware acceleration
         run: |
           echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
