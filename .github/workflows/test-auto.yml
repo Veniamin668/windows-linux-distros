@@ -21,7 +21,7 @@ jobs:
           disk-root: "D:"
 
       - name: Setup RAM Disk
-        uses: chad-golden/setup-ramdisk@v1
+        uses: chad-golden/setup-ramdisk@main
         with:
           size-in-mb: 4096    # Optional: Default is 2048
           drive-letter: 'R'   # Optional: Default is R
@@ -52,7 +52,7 @@ jobs:
         shell: pwsh
         
       - name: Dismount RAM Disk
-        uses: chad-golden/setup-ramdisk/dismount@v1
+        uses: chad-golden/setup-ramdisk/dismount@main
         with:
           drive-letter: 'R'   # Optional: Default is R
 
