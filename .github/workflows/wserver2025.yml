@@ -59,11 +59,12 @@ jobs:
             --device=/dev/net/tun \
             --cap-add NET_ADMIN \
             -e "BOOT_MODE=windows_secure" \
-            -e "ARGUMENTS=-cpu host" \
+            -e "ARGUMENTS=-cpu Broadwell-noTSX-IBRS,hypervisor=off,vmx=on,mpx=off,hv-time=on,hv-relaxed=on,hv-vapic=on,hv-spinlocks=0x1fff -no-reboot" \
             -e "TPM=Y" \
             -e "MANUAL=Y" \
             -e "VERSION=2025" \
             -e "RAM_SIZE=12G" \
+            -e "CPU_CORES=3" \
             -p 8006:8006 \
             -v "${PWD:-.}/windows:/storage" \
             -v "${PWD:-.}/tpm:/var/lib/swtpm" \
