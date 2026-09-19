@@ -54,7 +54,7 @@ jobs:
             --device=/dev/kvm \
             --device=/dev/net/tun \
             --cap-add NET_ADMIN \
-            -e "CPU_FLAGS=host" \
+            -e "ARGUMENTS=-cpu host" \
             -e "MANUAL=Y" \
             -e "BOOT_MODE=windows_secure" \
             -e "TPM=Y" \
