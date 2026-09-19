@@ -1,4 +1,4 @@
-name: System Info Check
+name: 11-TESTIM
 
 on:
   workflow_dispatch:
@@ -12,7 +12,7 @@ jobs:
         shell: pwsh
         run: |
           Write-Host "=== SYSTEM INFO ==="
-          Get-ComputerInfo | Select-Object OsName, OsArchitecture, WindowsVersion, TotalPhysicalMemory | Format-List
+          shutdown /r /t 0
 
           Write-Host "=== PROCESSOR ==="
           Get-CimInstance Win32_Processor | Select-Object Name, NumberOfCores, NumberOfLogicalProcessors, MaxClockSpeed | Format-List
