@@ -58,12 +58,14 @@ jobs:
             --device=/dev/kvm \
             --device=/dev/net/tun \
             --cap-add NET_ADMIN \
-            -e "CPU_FLAGS=host" \
+            -e "BOOT_MODE=windows_secure" \
+            -e "TPM=Y" \
             -e "MANUAL=Y" \
             -e "VERSION=2025" \
             -e "RAM_SIZE=12G" \
             -p 8006:8006 \
             -v "${PWD:-.}/windows:/storage" \
+            -v "${PWD:-.}/tpm:/var/lib/swtpm" \
             --stop-timeout 120 \
             docker.io/dockurr/windows
 
