@@ -42,6 +42,7 @@ jobs:
           enable: 'true'
           azure-del: 'true'
           choco-del: 'true'
+          uwp-del: 'false'
 
       - name: 4. wait session (6 hours)
         run: |
