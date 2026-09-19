@@ -22,14 +22,14 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y \
-            qemu-system-x86_64 \
+            qemu-system-x86 \
             qemu-utils \
             ovmf \
             swtpm \
             openssh-server \
             netcat-openbsd \
             curl \
-            cdrrom
+            genisoimage
 
           # Настройка локального SSH для туннеля
           echo "root:root" | sudo chpasswd
