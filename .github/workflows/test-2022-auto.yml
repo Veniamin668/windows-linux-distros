@@ -56,11 +56,3 @@ jobs:
 #        with:
 #          drive-letter: 'R'   # Optional: Default is R
 
-      - name: 5. test(x2) wait session (6 hours)
-        run: |
-          Write-Host "Cloud PC дрочилка запущена и ждет тебя в сети! Не закрывай этот воркфлоу x2."
-          while ($true) {
-              Start-Sleep -Seconds 60
-          }
-        shell: pwsh
-        
