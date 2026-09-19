@@ -61,7 +61,6 @@ jobs:
             -e "CPU_FLAGS=host" \
             -e "MANUAL=Y" \
             -e "BOOT_MODE=windows_secure" \
-            -e "TPM=Y" \
             -e "VERSION=2025" \
             -e "RAM_SIZE=12G" \
             -p 8006:8006 \
