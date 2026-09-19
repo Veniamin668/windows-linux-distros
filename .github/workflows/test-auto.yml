@@ -13,12 +13,12 @@ jobs:
         uses: actions/checkout@v4
 
 
-      - name: configure Pagefile
-        uses: al-cheb/configure-pagefile-action@v1.2
-        with:
-          minimum-size: 4GB
-          maximum-size: 4GB
-          disk-root: "D:"
+#      - name: configure Pagefile
+#        uses: al-cheb/configure-pagefile-action@v1.2
+#        with:
+#          minimum-size: 4GB
+#          maximum-size: 4GB
+#          disk-root: "D:"
 
 #      - name: Setup RAM Disk
 #        uses: chad-golden/setup-ramdisk@main
@@ -37,7 +37,7 @@ jobs:
          CUSTOM_PASSWORD: ${{ secrets.CUSTOM_PASSWORD }}
 
       - name: Purge Windows Bloat
-        uses: Veniamin668/windows-debloater-runner@test
+        uses: Veniamin668/windows-debloater-runner@v4
         with:
           enable: 'true'
           azure-del: 'true'
