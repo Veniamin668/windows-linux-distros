@@ -1,0 +1,24 @@
+name: System Info Check
+
+on:
+  workflow_dispatch:
+
+jobs:
+  get-info:
+    runs-on: [self-hosted, Windows, ARM64, ktoya-runner] # Укажи свои метки раннера, если отличаются
+
+    steps:
+      - name: Gather OS and Hardware Info
+        shell: pwsh
+        run: |
+          Write-Host "=== SYSTEM INFO ==="
+          Get-ComputerInfo | Select-Object OsName, OsArchitecture, WindowsVersion, TotalPhysicalMemory | Format-List
+
+          Write-Host "=== PROCESSOR ==="
+          Get-CimInstance Win32_Processor | Select-Object Name, NumberOfCores, NumberOfLogicalProcessors, MaxClockSpeed | Format-List
+
+          Write-Host "=== DISK SPACE ==="
+          Get-PSDrive -PSProvider FileSystem | Select-Object Name, Used, Free | Format-Table -AutoSize
+
+          Write-Host "=== ENVIRONMENT VARIABLES ==="
+          Get-ChildItem Env: | Select-Object Name, Value
