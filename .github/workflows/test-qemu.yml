@@ -1,0 +1,126 @@
+name: Windows Server 2025 & QEMUPod
+
+on:
+  workflow_dispatch:
+
+jobs:
+  overkill:
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+
+    steps:
+      - name: Cleanup Space
+        uses: rokibhasansagar/slimhub_actions@main
+
+      - name: Enable KVM hardware acceleration
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules && sudo udevadm trigger
+          sudo usermod -aG kvm $USER
+
+      - name: Install QEMU, OVMF, SWTPM and Tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            qemu-system-x86_64 \
+            qemu-utils \
+            ovmf \
+            swtpm \
+            openssh-server \
+            netcat-openbsd \
+            curl \
+            cdrrom
+
+          # Настройка локального SSH для туннеля
+          echo "root:root" | sudo chpasswd
+          sudo mkdir -p /var/run/sshd
+          sudo sed -i 's/#PermitRootLogin.*/PermitRootLogin yes/' /etc/ssh/sshd_config
+          echo "PasswordAuthentication yes" | sudo tee -a /etc/ssh/sshd_config
+          sudo /usr/sbin/sshd -p 22222 &
+
+      - name: Install Bore & Cloudflared
+        run: |
+          # Bore для SSH
+          curl -sL https://github.com/ekzhang/bore/releases/download/v0.5.1/bore-v0.5.1-x86_64-unknown-linux-musl.tar.gz | tar -xz
+          chmod +x bore && sudo mv bore /usr/local/bin/bore
+
+          # Cloudflared для веба (noVNC / QEMU VNC)
+          curl -L --output cloudflared.deb https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64.deb
+          sudo dpkg -i cloudflared.deb
+
+      - name: Prepare TPM 2.0 State
+        run: |
+          mkdir -p /tmp/tpm
+          swtpm socket --tpmstate dir=/tmp/tpm \
+            --ctrl type=unixio,path=/tmp/tpm/swtpm-sock \
+            --terminate --allow-root &
+
+      - name: Download Windows Server 2025 ISO (or use dockurr fetcher script)
+        run: |
+          mkdir -p /storage
+          # Качаем официальный ISO Windows Server 2025 или используем заготовку
+          # Для примера берем прямую ссылку или скрипт загрузки от Microsoft / Windows 11/Server 2025
+          echo "Downloading Windows Server 2025 ISO..."
+          # Ссылка на официальный пробный ISO (Evaluation)
+          curl -L -o /storage/win.iso "https://go.microsoft.com/fwlink/?linkid=2345829&clcid=0x409&culture=en-us&country=us" || true
+          
+          # Если ISO не скачался по прямой ссылке, создаем пустышку или используем твой метод
+          if [ ! -f /storage/win.iso ]; then
+            touch /storage/win.iso
+          fi
+
+      - name: Create Virtual Disk
+        run: |
+          qemu-img create -f qcow2 /storage/disk.qcow2 64G
+
+      - name: Start QEMU Windows Server VM
+        run: |
+          # Копируем UEFI firmware для поддержки Secure Boot / UEFI
+          mkdir -p /tmp/ovmf
+          cp /usr/share/OVMF/OVMF_CODE.ms.fd /tmp/ovmf/
+          cp /usr/share/OVMF/OVMF_VARS.ms.fd /tmp/ovmf/
+
+          # Запуск QEMU в фоне
+          qemu-system-x86_64 \
+            -name "Windows-Server-2025" \
+            -enable-kvm \
+            -cpu host,vmx=on,hypervisor=off \
+            -smp 3,sockets=1,cores=3,threads=1 \
+            -m 12G \
+            -machine q35 \
+            -drive if=pflash,format=raw,readonly=on,file=/tmp/ovmf/OVMF_CODE.ms.fd \
+            -drive if=pflash,format=raw,file=/tmp/ovmf/OVMF_VARS.ms.fd \
+            -chardev socket,id=chrtpm,path=/tmp/tpm/swtpm-sock \
+            -tpmdev emulator,id=tpm0,chardev=chrtpm \
+            -device tpm-tis,tpmdev=tpm0 \
+            -drive file=/storage/disk.qcow2,format=qcow2,if=virtio \
+            -cdrom /storage/win.iso \
+            -boot d \
+            -netdev user,id=net0,hostfwd=tcp::8006-:8006,hostfwd=tcp::3389-:3389 \
+            -device virtio-net-pci,netdev=net0 \
+            -vnc :0 \
+            -display vnc=0.0.0.0:0,websocket=8006 \
+            -daemonize
+
+          echo "=== QEMU INSTANTIATED DIRECTLY ON HOST ==="
+
+      - name: Wait for QEMU Web/VNC Port to Open
+        run: |
+          echo "=== WAITING FOR PORT 8006 TO BE READY ==="
+          while ! nc -z localhost 8006; do
+            sleep 5
+            echo "Port 8006 is not open yet, waiting..."
+          done
+          echo "=== PORT 8006 IS UP AND RUNNING! ==="
+
+      - name: Launch Tunnels
+        run: |
+          echo "=== STARTING TUNNELS ==="
+          # SSH туннель
+          bore local 22222 --to bore.pub &
+          
+          # Cloudflare туннель для веб-доступа к QEMU VNC
+          cloudflared tunnel --no-tls-verify --url http://localhost:8006 &
+
+          # Вечный затык для удержания сессии
+          tail -f /dev/null
