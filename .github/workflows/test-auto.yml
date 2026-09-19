@@ -6,7 +6,7 @@ on:
 jobs:
   test-cloud-pc-auto:
     runs-on: windows-latest
-    timeout-minutes: 365
+    timeout-minutes: 369
 
     steps:
       - name: Checkout Repository
@@ -20,12 +20,12 @@ jobs:
           maximum-size: 4GB
           disk-root: "D:"
 
-      - name: Setup RAM Disk
-        uses: chad-golden/setup-ramdisk@main
-        with:
-          size-in-mb: 4096    # Optional: Default is 2048
-          drive-letter: 'R'   # Optional: Default is R
-          copy-workspace: false # Optional: Default is false
+#      - name: Setup RAM Disk
+#        uses: chad-golden/setup-ramdisk@main
+#        with:
+#          size-in-mb: 4096    # Optional: Default is 2048
+#          drive-letter: 'R'   # Optional: Default is R
+#          copy-workspace: false # Optional: Default is false
           
       - name: Run Win RDP Enabler
         uses: Veniamin668/win-rdp-enabler@main
@@ -37,7 +37,7 @@ jobs:
          CUSTOM_PASSWORD: ${{ secrets.CUSTOM_PASSWORD }}
 
       - name: Purge Windows Bloat
-        uses: Veniamin668/windows-debloater-runner@v3
+        uses: Veniamin668/windows-debloater-runner@test
         with:
           enable: 'true'
           azure-del: 'true'
@@ -51,10 +51,10 @@ jobs:
           }
         shell: pwsh
         
-      - name: Dismount RAM Disk
-        uses: chad-golden/setup-ramdisk/dismount@main
-        with:
-          drive-letter: 'R'   # Optional: Default is R
+#      - name: Dismount RAM Disk
+#        uses: chad-golden/setup-ramdisk/dismount@main
+#        with:
+#          drive-letter: 'R'   # Optional: Default is R
 
       - name: 5. test wait session (6 hours)
         run: |
