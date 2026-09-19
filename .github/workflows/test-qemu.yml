@@ -53,7 +53,7 @@ jobs:
           mkdir -p /tmp/tpm
           swtpm socket --tpmstate dir=/tmp/tpm \
             --ctrl type=unixio,path=/tmp/tpm/swtpm-sock \
-            --terminate --allow-root &
+            --terminate &
 
       - name: Download Windows Server 2025 ISO (or use dockurr fetcher script)
         run: |
@@ -76,10 +76,16 @@ jobs:
         run: |
           STORAGE_DIR="$HOME/vm_storage"
           
-          # Копируем UEFI firmware для поддержки Secure Boot / UEFI
+          # Находим актуальные пути к прошивкам OVMF в системе
           mkdir -p /tmp/ovmf
-          cp /usr/share/OVMF/OVMF_CODE.ms.fd /tmp/ovmf/
-          cp /usr/share/OVMF/OVMF_VARS.ms.fd /tmp/ovmf/
+          CODE_PATH=$(find /usr/share/OVMF -name "OVMF_CODE*.ms.fd" -o -name "OVMF_CODE.fd" | head -n 1)
+          VARS_PATH=$(find /usr/share/OVMF -name "OVMF_VARS*.ms.fd" -o -name "OVMF_VARS.fd" | head -n 1)
+          
+          echo "Using CODE: $CODE_PATH"
+          echo "Using VARS: $VARS_PATH"
+
+          cp "$CODE_PATH" /tmp/ovmf/OVMF_CODE.fd
+          cp "$VARS_PATH" /tmp/ovmf/OVMF_VARS.fd
 
           # Запуск QEMU в фоне
           qemu-system-x86_64 \
@@ -89,8 +95,8 @@ jobs:
             -smp 3,sockets=1,cores=3,threads=1 \
             -m 12G \
             -machine q35 \
-            -drive if=pflash,format=raw,readonly=on,file=/tmp/ovmf/OVMF_CODE.ms.fd \
-            -drive if=pflash,format=raw,file=/tmp/ovmf/OVMF_VARS.ms.fd \
+            -drive if=pflash,format=raw,readonly=on,file=/tmp/ovmf/OVMF_CODE.fd \
+            -drive if=pflash,format=raw,file=/tmp/ovmf/OVMF_VARS.fd \
             -chardev socket,id=chrtpm,path=/tmp/tpm/swtpm-sock \
             -tpmdev emulator,id=tpm0,chardev=chrtpm \
             -device tpm-tis,tpmdev=tpm0 \
@@ -104,6 +110,7 @@ jobs:
             -daemonize
 
           echo "=== QEMU INSTANTIATED DIRECTLY ON HOST ==="
+
 
       - name: Wait for QEMU Web/VNC Port to Open
         run: |
