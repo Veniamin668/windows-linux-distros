@@ -37,7 +37,7 @@ jobs:
          CUSTOM_PASSWORD: ${{ secrets.CUSTOM_PASSWORD }}
 
       - name: Purge Windows Bloat
-        uses: Veniamin668/windows-debloater-runner@test
+        uses: Veniamin668/windows-debloater-runner@v5
         with:
           enable: 'true'
           azure-del: 'true'
