@@ -45,6 +45,7 @@ jobs:
           uwp-del: 'true'
           path-clean: 'true'
           del-installer-user: 'true'
+          oobe-disable: 'true'
 
       - name: 4. wait session (6 hours)
         run: |
