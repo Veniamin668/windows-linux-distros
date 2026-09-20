@@ -43,6 +43,8 @@ jobs:
           azure-del: 'true'
           choco-del: 'true'
           uwp-del: 'true'
+          path-clean: 'true'
+          del-installer-user: 'true'
 
       - name: 4. wait session (6 hours)
         run: |
