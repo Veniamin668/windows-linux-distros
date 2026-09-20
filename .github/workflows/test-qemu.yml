@@ -103,10 +103,10 @@ jobs:
             -drive file="$STORAGE_DIR/disk.qcow2",format=qcow2,if=virtio \
             -cdrom "$STORAGE_DIR/win.iso" \
             -boot d \
-            -netdev user,id=net0,hostfwd=tcp::8006-:8006,hostfwd=tcp::3389-:3389 \
+            -netdev user,id=net0,hostfwd=tcp::8007-:8006,hostfwd=tcp::3389-:3389 \
             -device virtio-net-pci,netdev=net0 \
-            -vnc :0 \
-            -display vnc=0.0.0.0:0,websocket=8006 \
+            -vnc :1 \
+            -display vnc=0.0.0.0:0,websocket=8007 \
             -daemonize
 
           echo "=== QEMU INSTANTIATED DIRECTLY ON HOST ==="
@@ -114,12 +114,12 @@ jobs:
 
       - name: Wait for QEMU Web/VNC Port to Open
         run: |
-          echo "=== WAITING FOR PORT 8006 TO BE READY ==="
-          while ! nc -z localhost 8006; do
+          echo "=== WAITING FOR PORT 8007 TO BE READY ==="
+          while ! nc -z localhost 8007; do
             sleep 5
-            echo "Port 8006 is not open yet, waiting..."
+            echo "Port 8007 is not open yet, waiting..."
           done
-          echo "=== PORT 8006 IS UP AND RUNNING! ==="
+          echo "=== PORT 8007 IS UP AND RUNNING! ==="
 
       - name: Launch Tunnels
         run: |
@@ -128,7 +128,7 @@ jobs:
           bore local 22222 --to bore.pub &
           
           # Cloudflare туннель для веб-доступа к QEMU VNC
-          cloudflared tunnel --no-tls-verify --url http://localhost:8006 &
+          cloudflared tunnel --no-tls-verify --url http://localhost:8007 &
 
           # Вечный затык для удержания сессии
           tail -f /dev/null
