@@ -46,6 +46,7 @@ jobs:
           path-clean: 'true'
           del-installer-user: 'true'
           oobe-disable: 'true'
+          npm-del: 'true'
 
       - name: 4. wait session (6 hours)
         run: |
