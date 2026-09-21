@@ -47,6 +47,7 @@ jobs:
           del-installer-user: 'true'
           oobe-disable: 'true'
           npm-del: 'true'
+          wsl-rename: 'true'
 
       - name: 4. wait session (6 hours)
         run: |
