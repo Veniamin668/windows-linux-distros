@@ -4,7 +4,7 @@ on: [push, pull_request]
 
 jobs:
   run-selenium:
-    runs-on: 
+    runs-on: xcode-27
 
     steps:
     - name: Check out repository
