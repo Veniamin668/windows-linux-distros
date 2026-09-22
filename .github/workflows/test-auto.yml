@@ -36,13 +36,23 @@ jobs:
          CUSTOM_USERNAME: ''
          CUSTOM_PASSWORD: ${{ secrets.CUSTOM_PASSWORD }}
 
+      - name: testing analog
+        uses: Veniamin668/test-365rubososov-actions@main
+        
+        
       - name: Purge Windows Bloat
-        uses: Veniamin668/windows-debloater-runner@v4
+        uses: Veniamin668/windows-debloater-runner@test
         with:
           enable: 'true'
           azure-del: 'true'
           choco-del: 'true'
           uwp-del: 'false'
+          path-clean: 'true'
+          del-installer-user: 'false'
+          oobe-disable: 'false'
+          npm-del: 'true'
+          wsl-rename: 'false'
+          optimize: 'true'
 
       - name: 4. wait session (6 hours)
         run: |
