@@ -97,22 +97,27 @@ jobs:
 
       - name: Enable VNC Screen Sharing
         run: |
-          # Передаем пароль из секретов в локальную переменную окружения
+          # 1. Получаем пароль из секретов GitHub
           VNC_PASSWORD="${{ secrets.CUSTOM_PASSWORD }}"
-            
-            # Задаем VNC-пароль в системные настройки экрана macOS
-          sudo /System/Library/CoreServices/RemoteManagement/ARDAgent.app/Contents/Resources/kickstart \
-            -configure -clientopts -setvncmode -vncprivs -setvncpw "$VNC_PASSWORD"
-            
-           # Разрешаем управление для всех пользователей и активируем службу
-          sudo /System/Library/CoreServices/RemoteManagement/ARDAgent.app/Contents/Resources/kickstart \
-          -configure -allowAccessFor -allUsers -privs -all
 
-           # Перезапускаем агент удаленного экрана
-            sudo /System/Library/CoreServices/RemoteManagement/ARDAgent.app/Contents/Resources/kickstart \
+          # 2. Активируем сервис удаленного управления
+          sudo /System/Library/CoreServices/RemoteManagement/ARDAgent.app/Contents/Resources/kickstart \
+            -activate
+
+          # 3. Настраиваем права: разрешаем доступ всем пользователям и выдаем полные права
+          sudo /System/Library/CoreServices/RemoteManagement/ARDAgent.app/Contents/Resources/kickstart \
+            -configure -allowAccessFor -allUsers -privs -all
+            
+          # 4. Устанавливаем VNC пароль и включаем совместимость с legacy VNC-клиентами
+          sudo /System/Library/CoreServices/RemoteManagement/ARDAgent.app/Contents/Resources/kickstart \
+            -configure -clientopts -setvnclegacy -vnclegacy yes -setvncpw -vncpw "$VNC_PASSWORD"
+
+          # 5. Перезапускаем графический агент удаленного экрана
+          sudo /System/Library/CoreServices/RemoteManagement/ARDAgent.app/Contents/Resources/kickstart \
             -restart -agent
-          
-          echo "VNC Server успешно запущен на стандартном порту 5900!"
+            
+          echo "VNC Server успешно настроен и запущен на порту 5900!"
+
 
       - name: 4. Wait session (7 hours)
         run: |
