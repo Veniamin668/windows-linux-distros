@@ -1,0 +1,71 @@
+name: Selenium on macOS
+
+on: [push, pull_request]
+
+jobs:
+  run-selenium:
+    runs-on: 
+
+    steps:
+    - name: Check out repository
+      uses: actions/checkout@v4
+
+    - name: Set up Python
+      uses: actions/setup-python@v5
+      with:
+        python-version: '3.11'
+
+    - name: Install dependencies
+      run: |
+        pip install selenium webdriver-manager
+
+    - name: Create and Run Selenium Script
+      run: |
+        # Создаем скрипт на лету
+        cat << 'EOF' > run_selenium.py
+        import os
+        from selenium import webdriver
+        from selenium.webdriver.chrome.options import Options
+
+        def main():
+            output_dir = "screenshots"
+            os.makedirs(output_dir, exist_ok=True)
+
+            chrome_options = Options()
+            chrome_options.add_argument("--headless=new")  # Надежный headless-режим
+            chrome_options.add_argument("--no-sandbox")
+            chrome_options.add_argument("--disable-dev-shm-usage")
+            chrome_options.add_argument("--window-size=1920,1080")
+
+            driver = webdriver.Chrome(options=chrome_options)
+
+            try:
+                print("Открываем страницу...")
+                driver.get("https://github.com")
+                print(f"Заголовок страницы: {driver.title}")
+
+                screenshot_path = os.path.join(output_dir, "github_home.png")
+                driver.save_screenshot(screenshot_path)
+                print(f"Скриншот успешно сохранен: {screenshot_path}")
+
+            except Exception as e:
+                print(f"Произошла ошибка: {e}")
+                if 'driver' in locals():
+                    driver.save_screenshot(os.path.join(output_dir, "error.png"))
+            finally:
+                if 'driver' in locals():
+                    driver.quit()
+
+        if __name__ == "__main__":
+            main()
+        EOF
+        
+        # Запускаем созданный файл
+        python run_selenium.py
+
+    - name: Upload Screenshots
+      if: always()
+      uses: actions/upload-artifact@v4
+      with:
+        name: selenium-screenshots
+        path: screenshots/
