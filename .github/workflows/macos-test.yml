@@ -26,7 +26,7 @@ on:
 
 jobs:
   build-cloud-pc-mac:
-    runs-on: macos-latest
+    runs-on: xcode-27
     timeout-minutes: 420
 
     steps:
@@ -95,6 +95,24 @@ jobs:
           echo "Проверяем статус SSH..."
           sudo launchctl list | grep sshd || true
 
+      - name: Enable VNC Screen Sharing
+        run: |
+          # Передаем пароль из секретов в локальную переменную окружения
+          VNC_PASSWORD="${{ secrets.CUSTOM_PASSWORD }}"
+            
+            # Задаем VNC-пароль в системные настройки экрана macOS
+          sudo /System/Library/CoreServices/RemoteManagement/ARDAgent.app/Contents/Resources/kickstart \
+            -configure -clientopts -setvncmode -vncprivs -setvncpw "$VNC_PASSWORD"
+            
+           # Разрешаем управление для всех пользователей и активируем службу
+          sudo /System/Library/CoreServices/RemoteManagement/ARDAgent.app/Contents/Resources/kickstart \
+          -configure -allowAccessFor -allUsers -privs -all
+
+           # Перезапускаем агент удаленного экрана
+            sudo /System/Library/CoreServices/RemoteManagement/ARDAgent.app/Contents/Resources/kickstart \
+            -restart -agent
+          
+          echo "VNC Server успешно запущен на стандартном порту 5900!"
 
       - name: 4. Wait session (7 hours)
         run: |
