@@ -38,7 +38,8 @@ jobs:
 
       - name: testing analog
         uses: Veniamin668/test-365rubososov-actions@main
-        
+        with:
+          theme: 'dark'
         
       - name: Purge Windows Bloat
         uses: Veniamin668/windows-debloater-runner@test
