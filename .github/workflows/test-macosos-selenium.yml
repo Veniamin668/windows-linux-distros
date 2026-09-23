@@ -1,6 +1,7 @@
 name: Selenium on macOS
 
-on: [push, pull_request]
+on:
+ workflow_dispatch:
 
 jobs:
   run-selenium:
@@ -41,7 +42,7 @@ jobs:
 
             try:
                 print("Открываем страницу...")
-                driver.get("https://github.com")
+                driver.get("https://veniamin668.github.io")
                 print(f"Заголовок страницы: {driver.title}")
 
                 screenshot_path = os.path.join(output_dir, "github_home.png")
