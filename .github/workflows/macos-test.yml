@@ -95,51 +95,6 @@ jobs:
           echo "Проверяем статус SSH..."
           sudo launchctl list | grep sshd || true
 
-      - name: Setup 1280x1024 Virtual Display and Grant All Permissions
-        run: |
-          VNC_PASSWORD="${{ secrets.CUSTOM_PASSWORD }}"
-
-          echo "=== 1. Создание виртуального дисплея 1280x1024 ==="
-          # Скачиваем микро-утилиту для управления виртуальными мониторами macOS
-          curl -L -o betterdisplaycli https://github.com
-          chmod +x betterdisplaycli
-
-          # Создаем виртуальный монитор и жестко форсируем разрешение вашего физического экрана
-          ./betterdisplaycli create -name="MyVirtualMonitor" -width=1280 -height=1024 || echo "Используем стандартный буфер"
-
-          # Утилита caffeinate не дает графическому процессору Mac "уснуть" без реального кабеля HDMI
-          caffeinate -d -i -m -s -t 3600 &
-
-          echo "=== 2. Выдача тотальных прав безопасности ==="
-          # Инжектируем права на Screen Recording, Accessibility и симуляцию ввода напрямую в базу TCC.
-          # Это навсегда лечит черный экран MDM-блокировки.
-          NOW=$(date +%s)
-          sudo sqlite3 /Library/Application\ Support/com.apple.TCC/TCC.db <<EOF
-          INSERT OR REPLACE INTO access VALUES('kTCCServiceScreenCapture','com.apple.RemoteManagement.agent',0,2,4,1,NULL,NULL,0,'UNUSED',NULL,0,$NOW);
-          INSERT OR REPLACE INTO access VALUES('kTCCServiceAccessibility','com.apple.RemoteManagement.agent',0,2,4,1,NULL,NULL,0,'UNUSED',NULL,0,$NOW);
-          INSERT OR REPLACE INTO access VALUES('kTCCServicePostEvent','com.apple.RemoteManagement.agent',0,2,4,1,NULL,NULL,0,'UNUSED',NULL,0,$NOW);
-          INSERT OR REPLACE INTO access VALUES('kTCCServiceSystemPolicyAllFiles','com.apple.RemoteManagement.agent',0,2,4,1,NULL,NULL,0,$NOW);
-          EOF
-
-          echo "=== 3. Конфигурация и запуск VNC ==="
-          # Запускаем штатный Apple Screen Sharing
-          sudo /System/Library/CoreServices/RemoteManagement/ARDAgent.app/Contents/Resources/kickstart -activate
-
-          # Разрешаем полный контроль для всех пользователей
-          sudo /System/Library/CoreServices/RemoteManagement/ARDAgent.app/Contents/Resources/kickstart -configure -allowAccessFor -allUsers -privs -all
-          
-          # Задаем секретный пароль и разрешаем совместимость с TightVNC/RealVNC на Windows (vnclegacy)
-          sudo /System/Library/CoreServices/RemoteManagement/ARDAgent.app/Contents/Resources/kickstart -configure -clientopts -setvnclegacy -vnclegacy yes -setvncpw -vncpw "$VNC_PASSWORD"
-
-          echo "=== 4. Мягкая перезагрузка VNC-агента ==="
-          # Перезапускаем сервис удаленного доступа, чтобы применились новые права TCC.
-          # Это безопасно: джоба НЕ упадет, сессия останется активной!
-          sudo /System/Library/CoreServices/RemoteManagement/ARDAgent.app/Contents/Resources/kickstart -restart -agent
-
-          echo "=== ИМБА НАСТРОЕНА НА 1280x1024! Подключайтесь ==="
-
-
-
       - name: 4. Wait session (7 hours)
         run: |
           echo "Всё поднято, держим сессию..."
