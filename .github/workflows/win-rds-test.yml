@@ -313,7 +313,7 @@ jobs:
 
           Write-Host "[+] Windows image applied."
 
-      # ============================================================
+# ============================================================
       # 7. BOOT FILES
       # ============================================================
       - name: Configure boot files
@@ -325,20 +325,51 @@ jobs:
           Write-Host "                    CONFIGURE BOOT"
           Write-Host "============================================================"
 
-          $efiPartition = Get-Partition -DiskNumber $env:MASTER_DISK |
+          $diskNumber = [int]$env:MASTER_DISK
+
+          # Ищем EFI System Partition
+          $efiPartition = Get-Partition -DiskNumber $diskNumber |
               Where-Object {
-                  $_.Size -lt 200MB
+                  $_.Size -lt 200MB -and
+                  $_.GptType -eq "{C12A7328-F81F-11D2-BA4B-00A0C93EC93B}"
               } |
               Select-Object -First 1
 
           if (-not $efiPartition) {
-              throw "EFI partition not found."
+              throw "EFI partition not found on disk $diskNumber."
           }
 
+          Write-Host "[+] EFI partition found:"
+          Write-Host "    Disk       : $diskNumber"
+          Write-Host "    Partition  : $($efiPartition.PartitionNumber)"
+          Write-Host "    Size       : $([math]::Round($efiPartition.Size / 1MB, 2)) MB"
+          Write-Host "    DriveLetter: '$($efiPartition.DriveLetter)'"
+
+          # Если буквы нет — назначаем её явно.
+          # Не полагаемся на случайную букву Windows.
           if (-not $efiPartition.DriveLetter) {
-              $efiPartition |
-                  Add-PartitionAccessPath `
-                  -AssignDriveLetter
+
+              Write-Host "[*] Assigning drive letter S: to EFI partition..."
+
+              Set-Partition `
+                  -DiskNumber $diskNumber `
+                  -PartitionNumber $efiPartition.PartitionNumber `
+                  -NewDriveLetter S
+
+              if ($LASTEXITCODE -ne 0) {
+                  throw "Failed to assign drive letter S: to EFI partition."
+              }
+          }
+
+          # ВАЖНО:
+          # перечитываем partition после Set-Partition,
+          # чтобы получить реально назначенную DriveLetter.
+          $efiPartition = Get-Partition `
+              -DiskNumber $diskNumber `
+              -PartitionNumber $efiPartition.PartitionNumber
+
+          if (-not $efiPartition.DriveLetter) {
+              throw "EFI partition still has no drive letter after assignment."
           }
 
           $efiLetter = "$($efiPartition.DriveLetter):"
@@ -346,17 +377,28 @@ jobs:
           Write-Host "[+] EFI: $efiLetter"
           Write-Host "[+] OS : $env:MASTER_OS"
 
-          bcdboot.exe `
-              "$env:MASTER_OS\Windows" `
-              /s "$efiLetter" `
-              /f UEFI
-
-          if ($LASTEXITCODE -ne 0) {
-              throw "BCDBOOT failed."
+          # Проверяем Windows перед BCDBOOT
+          if (-not (Test-Path "$env:MASTER_OS\Windows")) {
+              throw "Windows directory not found at $env:MASTER_OS\Windows"
           }
 
-          Write-Host "[+] Boot files configured."
+          # Формируем UEFI boot files
+          & bcdboot.exe `
+              "$env:MASTER_OS\Windows" `
+              /s $efiLetter `
+              /f UEFI `
+              /v
 
+          if ($LASTEXITCODE -ne 0) {
+              throw "BCDBOOT failed with exit code $LASTEXITCODE."
+          }
+
+          Write-Host "[+] Boot files configured successfully."
+
+          Write-Host ""
+          Write-Host "[+] EFI contents:"
+          Get-ChildItem "$efiLetter\" -Force |
+              Select-Object Name, Length
       # ============================================================
       # 8. IMAGE CLEANUP
       # ============================================================
