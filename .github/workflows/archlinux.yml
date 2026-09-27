@@ -52,6 +52,7 @@ jobs:
           sudo sed -i 's/PermitRootLogin prohibit-password/PermitRootLogin yes/' /etc/ssh/sshd_config
           echo "PermitRootLogin yes" | sudo tee -a /etc/ssh/sshd_config
           echo "PasswordAuthentication yes" | sudo tee -a /etc/ssh/sshd_config
+          sudo ssh-keygen -A
           sudo /usr/sbin/sshd -p 22222 &
           
       - name: Install Bore & Cloudflared
