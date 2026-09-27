@@ -1,4 +1,4 @@
-name: Deploy Windows Native VDI testing
+name: Deploy Windows Native VDI
 
 on:
   workflow_dispatch:
@@ -21,39 +21,22 @@ jobs:
     timeout-minutes: 360
 
     steps:
-
-      # ==========================================================
-      # STAGE 1
-      # WINDOWS ISO -> MASTER VHDX
-      # ==========================================================
-
       - name: "Generate VDI Master VHDX via DISM"
         shell: powershell
         run: |
           $OutputEncoding = [System.Text.Encoding]::UTF8
-
           $WorkDir = "${{ github.workspace }}\vdi_build"
 
-          New-Item `
-            -ItemType Directory `
-            -Force `
-            -Path $WorkDir | Out-Null
+          New-Item -ItemType Directory -Force -Path $WorkDir | Out-Null
 
           Write-Host "=========================================="
           Write-Host "  WINDOWS VDI MASTER IMAGE BUILD"
           Write-Host "=========================================="
 
-          # DOWNLOAD ISO
           $IsoPath = "$WorkDir\windows.iso"
 
-          Write-Host "[1/8] Downloading Windows ISO..."
-
-          curl.exe `
-            -L `
-            --fail `
-            --retry 3 `
-            -o "$IsoPath" `
-            "${{ inputs.iso_url }}"
+          Write-Host "[1/7] Downloading Windows ISO..."
+          curl.exe -L --fail --retry 3 -o "$IsoPath" "${{ inputs.iso_url }}"
 
           if (!(Test-Path $IsoPath)) {
               throw "Windows ISO was not downloaded."
@@ -62,19 +45,15 @@ jobs:
           Write-Host "[+] ISO downloaded."
           Write-Host ("    Size: {0:N2} GB" -f ((Get-Item $IsoPath).Length / 1GB))
 
-          # MOUNT ISO
-          Write-Host "[2/8] Mounting ISO..."
+          Write-Host "[2/7] Mounting ISO..."
 
-          $IsoImage = Mount-DiskImage `
-            -ImagePath $IsoPath `
-            -PassThru
-
+          $IsoImage = Mount-DiskImage -ImagePath $IsoPath -PassThru
           Start-Sleep -Seconds 3
 
           $IsoVolume = $IsoImage |
-            Get-Volume |
-            Where-Object DriveLetter |
-            Select-Object -First 1
+              Get-Volume |
+              Where-Object DriveLetter |
+              Select-Object -First 1
 
           if (!$IsoVolume) {
               throw "Failed to determine ISO drive letter."
@@ -84,7 +63,6 @@ jobs:
 
           Write-Host "[+] ISO mounted: $IsoDrive"
 
-          # FIND INSTALL.WIM / INSTALL.ESD
           $WimPath = "$IsoDrive\sources\install.wim"
           $EsdPath = "$IsoDrive\sources\install.esd"
 
@@ -100,82 +78,73 @@ jobs:
 
           Write-Host "[+] Image: $ImagePath"
 
-          # CREATE VHDX
-          Write-Host "[3/8] Creating dynamic VHDX..."
+          Write-Host "[3/7] Creating dynamic VHDX..."
 
           $VhdPath = "$WorkDir\vdi_template.vhdx"
 
           if (Test-Path $VhdPath) {
-              Remove-Item `
-                -Force `
-                -Path $VhdPath
+              Remove-Item -Force -Path $VhdPath
           }
 
           New-VHD `
-            -Path $VhdPath `
-            -SizeBytes 60GB `
-            -Dynamic | Out-Null
+              -Path $VhdPath `
+              -SizeBytes 60GB `
+              -Dynamic |
+              Out-Null
 
-          # MOUNT VHDX
-          Write-Host "[4/8] Initializing VHDX..."
+          Write-Host "[4/7] Initializing VHDX..."
 
-          $Vhd = Mount-VHD `
-            -Path $VhdPath `
-            -Passthru
-
+          $Vhd = Mount-VHD -Path $VhdPath -Passthru
           $DiskNumber = $Vhd.DiskNumber
 
           Initialize-Disk `
-            -Number $DiskNumber `
-            -PartitionStyle GPT `
-            -PassThru | Out-Null
+              -Number $DiskNumber `
+              -PartitionStyle GPT `
+              -PassThru |
+              Out-Null
 
           $Partition = New-Partition `
-            -DiskNumber $DiskNumber `
-            -UseMaximumSize `
-            -DriveLetter T
+              -DiskNumber $DiskNumber `
+              -UseMaximumSize `
+              -DriveLetter T
 
           Format-Volume `
-            -DriveLetter T `
-            -FileSystem NTFS `
-            -NewFileSystemLabel "VDI" `
-            -Confirm:$false | Out-Null
+              -DriveLetter T `
+              -FileSystem NTFS `
+              -NewFileSystemLabel "VDI" `
+              -Confirm:$false |
+              Out-Null
 
           Write-Host "[+] VHDX mounted as T:"
 
-          # APPLY WINDOWS IMAGE
-          Write-Host "[5/8] Applying Windows image with DISM..."
+          Write-Host "[5/7] Applying Windows image with DISM..."
 
           DISM.exe `
-            /Apply-Image `
-            /ImageFile:"$ImagePath" `
-            /Index:${{ inputs.wim_index }} `
-            /ApplyDir:T:\
+              /Apply-Image `
+              /ImageFile:"$ImagePath" `
+              /Index:${{ inputs.wim_index }} `
+              /ApplyDir:T:\
 
           if ($LASTEXITCODE -ne 0) {
               throw "DISM /Apply-Image failed with exit code $LASTEXITCODE"
           }
 
-          # BOOTLOADER
-          Write-Host "[6/8] Creating UEFI boot configuration..."
+          Write-Host "[+] Windows image applied."
 
-          bcdboot.exe `
-            T:\Windows `
-            /s T: `
-            /f UEFI
+          Write-Host "[6/7] Creating UEFI boot configuration..."
+
+          bcdboot.exe T:\Windows /s T: /f UEFI
 
           if ($LASTEXITCODE -ne 0) {
               throw "BCDBOOT failed."
           }
 
-          # FINALIZE MASTER
-          Write-Host "[7/8] Finalizing VHDX..."
+          Write-Host "[+] UEFI boot configuration created."
 
-          Dismount-VHD `
-            -Path $VhdPath
+          Write-Host "[7/7] Finalizing VHDX..."
 
-          Dismount-DiskImage `
-            -ImagePath $IsoPath
+          Dismount-VHD -Path $VhdPath
+          Dismount-DiskImage -ImagePath $IsoPath
 
           Write-Host ""
           Write-Host "=========================================="
@@ -183,16 +152,8 @@ jobs:
           Write-Host "=========================================="
           Write-Host "VHDX: $VhdPath"
 
-
-      # ==========================================================
-      # STAGE 2
-      # CHECK HYPER-V + INSTALL RDS + AUTOLOGON
-      # ==========================================================
-
       - name: "Check Hyper-V and Install RDS Roles"
         shell: powershell
-        env:
-          SECURE_ADMIN_PASS: ${{ secrets.ADMIN_PASS }}
         run: |
           Write-Host "=========================================="
           Write-Host "  WINDOWS SERVER ROLES"
@@ -200,7 +161,6 @@ jobs:
 
           Import-Module ServerManager
 
-          # HYPER-V
           Write-Host ""
           Write-Host "[1] Checking Hyper-V..."
 
@@ -214,9 +174,9 @@ jobs:
               Write-Host "[+] Installing Hyper-V..."
 
               $HyperVResult = Install-WindowsFeature `
-                -Name Hyper-V `
-                -IncludeManagementTools `
-                -Restart:$false
+                  -Name Hyper-V `
+                  -IncludeManagementTools `
+                  -Restart:$false
 
               if (!$HyperVResult.Success) {
                   throw "Hyper-V installation failed."
@@ -225,7 +185,6 @@ jobs:
               Write-Host "[+] Hyper-V installation completed."
           }
 
-          # HYPER-V POWERSHELL
           Write-Host ""
           Write-Host "[2] Checking Hyper-V PowerShell module..."
 
@@ -237,9 +196,9 @@ jobs:
               Write-Host "[+] Installing Hyper-V PowerShell..."
 
               $HyperVPSResult = Install-WindowsFeature `
-                -Name Hyper-V-PowerShell `
-                -IncludeManagementTools `
-                -Restart:$false
+                  -Name Hyper-V-PowerShell `
+                  -IncludeManagementTools `
+                  -Restart:$false
 
               if (!$HyperVPSResult.Success) {
                   throw "Hyper-V PowerShell installation failed."
@@ -250,7 +209,6 @@ jobs:
 
           Import-Module Hyper-V -ErrorAction Stop
 
-          # RDS VIRTUALIZATION
           Write-Host ""
           Write-Host "[3] Checking RDS Virtualization..."
 
@@ -263,19 +221,14 @@ jobs:
               Write-Host "[+] Installing RDS Virtualization..."
 
               $RDSVirtualizationResult = Install-WindowsFeature `
-                -Name RDS-Virtualization `
-                -IncludeManagementTools `
-                -Restart:$false
+                  -Name RDS-Virtualization `
+                  -IncludeManagementTools `
+                  -Restart:$false
 
               Write-Host ""
               Write-Host "RDS Virtualization installation result:"
-
               $RDSVirtualizationResult |
-                Format-List `
-                  Success,
-                  RestartNeeded,
-                  ExitCode,
-                  FeatureResult
+                  Format-List Success,RestartNeeded,ExitCode,FeatureResult
 
               if (!$RDSVirtualizationResult.Success) {
                   throw "RDS Virtualization installation failed."
@@ -283,8 +236,8 @@ jobs:
 
               Write-Host "[+] RDS Virtualization installation completed."
 
-              $RDSVirtualizationCheck = `
-                Get-WindowsFeature -Name RDS-Virtualization
+              $RDSVirtualizationCheck =
+                  Get-WindowsFeature -Name RDS-Virtualization
 
               if (!$RDSVirtualizationCheck.Installed) {
                   throw "RDS Virtualization installation was reported successful, but the feature is not installed."
@@ -293,7 +246,6 @@ jobs:
               Write-Host "[+] RDS Virtualization verified."
           }
 
-          # RDS WEB ACCESS
           Write-Host ""
           Write-Host "[4] Checking RDS Web Access..."
 
@@ -306,19 +258,14 @@ jobs:
               Write-Host "[+] Installing RDS Web Access..."
 
               $RDSWebAccessResult = Install-WindowsFeature `
-                -Name RDS-Web-Access `
-                -IncludeManagementTools `
-                -Restart:$false
+                  -Name RDS-Web-Access `
+                  -IncludeManagementTools `
+                  -Restart:$false
 
               Write-Host ""
               Write-Host "RDS Web Access installation result:"
-
               $RDSWebAccessResult |
-                Format-List `
-                  Success,
-                  RestartNeeded,
-                  ExitCode,
-                  FeatureResult
+                  Format-List Success,RestartNeeded,ExitCode,FeatureResult
 
               if (!$RDSWebAccessResult.Success) {
                   throw "RDS Web Access installation failed."
@@ -326,8 +273,8 @@ jobs:
 
               Write-Host "[+] RDS Web Access installation completed."
 
-              $RDSWebAccessCheck = `
-                Get-WindowsFeature -Name RDS-Web-Access
+              $RDSWebAccessCheck =
+                  Get-WindowsFeature -Name RDS-Web-Access
 
               if (!$RDSWebAccessCheck.Installed) {
                   throw "RDS Web Access installation was reported successful, but the feature is not installed."
@@ -336,66 +283,19 @@ jobs:
               Write-Host "[+] RDS Web Access verified."
           }
 
-          # ADMIN PASSWORD
-          Write-Host ""
-          Write-Host "[5] Configuring runneradmin password..."
-
-          if ([string]::IsNullOrWhiteSpace($env:SECURE_ADMIN_PASS)) {
-              throw "ADMIN_PASS secret is empty."
-          }
-
-          $SecurePassword = ConvertTo-SecureString `
-            $env:SECURE_ADMIN_PASS `
-            -AsPlainText `
-            -Force
-
-          Set-LocalUser `
-            -Name "runneradmin" `
-            -Password $SecurePassword
-
-          # AUTOLOGON
-          Write-Host ""
-          Write-Host "[6] Configuring Windows AutoLogon..."
-
-          $RegPath = `
-            "HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Winlogon"
-
-          Set-ItemProperty `
-            -Path $RegPath `
-            -Name "AutoAdminLogon" `
-            -Value "1"
-
-          Set-ItemProperty `
-            -Path $RegPath `
-            -Name "DefaultUserName" `
-            -Value "runneradmin"
-
-          Set-ItemProperty `
-            -Path $RegPath `
-            -Name "DefaultPassword" `
-            -Value $env:SECURE_ADMIN_PASS
-
-          Set-ItemProperty `
-            -Path $RegPath `
-            -Name "ForceAutoLogon" `
-            -Value "1"
-
-          # REBOOT
           Write-Host ""
           Write-Host "=========================================="
           Write-Host "  ROLE CONFIGURATION COMPLETE"
-          Write-Host "  REBOOTING HOST"
           Write-Host "=========================================="
+          Write-Host ""
+          Write-Host "No custom AutoLogon configuration."
+          Write-Host "No runneradmin password modification."
+          Write-Host "No Winlogon registry modification."
+          Write-Host ""
+          Write-Host "Rebooting host and leaving runner bootstrap"
+          Write-Host "to the native hosted runner environment."
 
           Restart-Computer -Force
-
-
-      # ==========================================================
-      # STAGE 3
-      # YOUR WIN-RDP-ENABLER
-      #
-      # TAILSCALE AND RDP FIREWALL ARE HANDLED THERE
-      # ==========================================================
 
       - name: "Run Win RDP Enabler (Post-Reboot Connect)"
         uses: Veniamin668/win-rdp-enabler@main
@@ -405,12 +305,6 @@ jobs:
           USE_CUSTOM_USER: 'false'
           CUSTOM_USERNAME: ''
           CUSTOM_PASSWORD: ${{ secrets.CUSTOM_PASSWORD }}
-
-
-      # ==========================================================
-      # STAGE 4
-      # HYPER-V NAT NETWORK
-      # ==========================================================
 
       - name: "Create VDI Hyper-V NAT Network"
         shell: powershell
@@ -426,17 +320,15 @@ jobs:
           $Prefix = "192.168.250.0/24"
           $NatName = "VDI-NAT"
 
-          $ExistingSwitch = `
-            Get-VMSwitch `
-              -Name $SwitchName `
-              -ErrorAction SilentlyContinue
+          $ExistingSwitch =
+              Get-VMSwitch -Name $SwitchName -ErrorAction SilentlyContinue
 
           if (!$ExistingSwitch) {
               Write-Host "[+] Creating Hyper-V Internal Switch..."
-
               New-VMSwitch `
-                -Name $SwitchName `
-                -SwitchType Internal | Out-Null
+                  -Name $SwitchName `
+                  -SwitchType Internal |
+                  Out-Null
           }
           else {
               Write-Host "[*] VDI-NAT switch already exists."
@@ -444,19 +336,21 @@ jobs:
 
           Start-Sleep -Seconds 2
 
-          $Adapter = Get-NetAdapter |
-            Where-Object {
-                $_.Name -like "*$SwitchName*"
-            } |
-            Select-Object -First 1
+          $Adapter =
+              Get-NetAdapter |
+              Where-Object {
+                  $_.Name -like "*$SwitchName*"
+              } |
+              Select-Object -First 1
 
           if (!$Adapter) {
-              $Adapter = Get-NetAdapter |
-                Where-Object {
-                    $_.InterfaceDescription -like "*Hyper-V Virtual Ethernet Adapter*"
-                } |
-                Sort-Object ifIndex -Descending |
-                Select-Object -First 1
+              $Adapter =
+                  Get-NetAdapter |
+                  Where-Object {
+                      $_.InterfaceDescription -like "*Hyper-V Virtual Ethernet Adapter*"
+                  } |
+                  Sort-Object ifIndex -Descending |
+                  Select-Object -First 1
           }
 
           if (!$Adapter) {
@@ -465,39 +359,39 @@ jobs:
 
           Write-Host "[+] Adapter: $($Adapter.Name)"
 
-          $ExistingIP = Get-NetIPAddress `
-            -InterfaceIndex $Adapter.ifIndex `
-            -AddressFamily IPv4 `
-            -ErrorAction SilentlyContinue |
-            Where-Object {
-                $_.IPAddress -eq $GatewayIP
-            }
+          $ExistingIP =
+              Get-NetIPAddress `
+                  -InterfaceIndex $Adapter.ifIndex `
+                  -AddressFamily IPv4 `
+                  -ErrorAction SilentlyContinue |
+              Where-Object {
+                  $_.IPAddress -eq $GatewayIP
+              }
 
           if (!$ExistingIP) {
               Write-Host "[+] Assigning gateway $GatewayIP..."
 
               New-NetIPAddress `
-                -InterfaceIndex $Adapter.ifIndex `
-                -IPAddress $GatewayIP `
-                -PrefixLength 24 `
-                -ErrorAction Stop | Out-Null
+                  -InterfaceIndex $Adapter.ifIndex `
+                  -IPAddress $GatewayIP `
+                  -PrefixLength 24 `
+                  -ErrorAction Stop |
+                  Out-Null
           }
           else {
               Write-Host "[*] Gateway already configured."
           }
 
-          $ExistingNat = `
-            Get-NetNat `
-              -Name $NatName `
-              -ErrorAction SilentlyContinue
+          $ExistingNat =
+              Get-NetNat -Name $NatName -ErrorAction SilentlyContinue
 
           if (!$ExistingNat) {
               Write-Host "[+] Creating NAT $Prefix..."
 
               New-NetNat `
-                -Name $NatName `
-                -InternalIPInterfaceAddressPrefix $Prefix |
-                Out-Null
+                  -Name $NatName `
+                  -InternalIPInterfaceAddressPrefix $Prefix |
+                  Out-Null
           }
           else {
               Write-Host "[*] NAT already exists."
@@ -510,12 +404,6 @@ jobs:
           Write-Host "Switch : $SwitchName"
           Write-Host "Gateway: $GatewayIP"
           Write-Host "Subnet : $Prefix"
-
-
-      # ==========================================================
-      # STAGE 5
-      # MASTER VM
-      # ==========================================================
 
       - name: "Create RDS Master Template VM"
         shell: powershell
@@ -532,73 +420,60 @@ jobs:
           }
 
           New-Item `
-            -ItemType Directory `
-            -Force `
-            -Path $VMPath | Out-Null
+              -ItemType Directory `
+              -Force `
+              -Path $VMPath |
+              Out-Null
 
           Write-Host "=========================================="
           Write-Host "  CREATING MASTER VM"
           Write-Host "=========================================="
 
-          $ExistingVM = `
-            Get-VM `
-              -Name $VMName `
-              -ErrorAction SilentlyContinue
+          $ExistingVM =
+              Get-VM -Name $VMName -ErrorAction SilentlyContinue
 
           if ($ExistingVM) {
               Write-Host "[*] Existing Master VM found."
 
               if ($ExistingVM.State -ne "Off") {
                   Stop-VM `
-                    -Name $VMName `
-                    -TurnOff `
-                    -Force
+                      -Name $VMName `
+                      -TurnOff `
+                      -Force
               }
 
               Remove-VM `
-                -Name $VMName `
-                -Force
+                  -Name $VMName `
+                  -Force
           }
 
           New-VM `
-            -Name $VMName `
-            -Generation 2 `
-            -MemoryStartupBytes 4GB `
-            -VHDPath $VhdPath `
-            -Path $VMPath `
-            -SwitchName "VDI-NAT"
-
-          Set-VMProcessor `
-            -VMName $VMName `
-            -Count 4
-
-          Get-VMNetworkAdapter `
-            -VMName $VMName |
-            Set-VMNetworkAdapter `
+              -Name $VMName `
+              -Generation 2 `
+              -MemoryStartupBytes 4GB `
+              -VHDPath $VhdPath `
+              -Path $VMPath `
               -SwitchName "VDI-NAT"
 
+          Set-VMProcessor `
+              -VMName $VMName `
+              -Count 4
+
+          Get-VMNetworkAdapter `
+              -VMName $VMName |
+              Set-VMNetworkAdapter `
+                  -SwitchName "VDI-NAT"
+
           Set-VMFirmware `
-            -VMName $VMName `
-            -EnableSecureBoot On `
-            -SecureBootTemplate "MicrosoftWindows"
+              -VMName $VMName `
+              -EnableSecureBoot On `
+              -SecureBootTemplate "MicrosoftWindows"
 
           Write-Host ""
           Write-Host "[+] Master VM created."
 
-          Get-VM `
-            -Name $VMName |
-            Format-List `
-              Name,
-              State,
-              Generation,
-              CPUUsage,
-              MemoryAssigned
-
-
-      # ==========================================================
-      # STAGE 6
-      # RDS VDI COLLECTION
-      # ==========================================================
+          Get-VM -Name $VMName |
+              Format-List Name,State,Generation,CPUUsage,MemoryAssigned
 
       - name: "Deploy Native RDS VDI Collection"
         shell: powershell
@@ -606,14 +481,14 @@ jobs:
           Import-Module RemoteDesktop
 
           $Broker = $env:COMPUTERNAME
-
           $WorkDir = "${{ github.workspace }}\vdi_build"
           $DiskPath = "$WorkDir\CollectionDisks"
 
           New-Item `
-            -ItemType Directory `
-            -Force `
-            -Path $DiskPath | Out-Null
+              -ItemType Directory `
+              -Force `
+              -Path $DiskPath |
+              Out-Null
 
           Write-Host "=========================================="
           Write-Host "  NATIVE RDS VDI COLLECTION"
@@ -625,37 +500,37 @@ jobs:
           Write-Host "Existing RDS deployment:"
 
           Get-RDServer `
-            -ConnectionBroker $Broker `
-            -ErrorAction SilentlyContinue |
-            Format-Table `
-              Server,
-              Roles
+              -ConnectionBroker $Broker `
+              -ErrorAction SilentlyContinue |
+              Format-Table Server,Roles
 
           Write-Host ""
           Write-Host "Creating VDI collection..."
 
-          $ExistingCollection = `
-            Get-RDVirtualDesktopCollection `
-              -ConnectionBroker $Broker `
-              -ErrorAction SilentlyContinue |
-            Where-Object {
-                $_.CollectionName -eq "VDI-Cloud-Pool"
-            }
+          $ExistingCollection =
+              Get-RDVirtualDesktopCollection `
+                  -ConnectionBroker $Broker `
+                  -ErrorAction SilentlyContinue |
+              Where-Object {
+                  $_.CollectionName -eq "VDI-Cloud-Pool"
+              }
 
           if (!$ExistingCollection) {
+
               New-RDVirtualDesktopCollection `
-                -ConnectionBroker $Broker `
-                -CollectionName "VDI-Cloud-Pool" `
-                -CollectionDescription "Native Windows VDI Cloud Pool" `
-                -PooledManaged `
-                -VirtualDesktopTemplateName "RDS-Master-Template" `
-                -VirtualDesktopTemplateHostServer $Broker `
-                -VirtualDesktopAllocation @{ $Broker = 1 } `
-                -StorageType LocalStorage `
-                -VirtualDesktopNamePrefix "VDI-NTV-" `
-                -VirtualDesktopPasswordAge 31 `
-                -Path $DiskPath `
-                -Confirm:$false
+                  -ConnectionBroker $Broker `
+                  -CollectionName "VDI-Cloud-Pool" `
+                  -CollectionDescription "Native Windows VDI Cloud Pool" `
+                  -PooledManaged `
+                  -VirtualDesktopTemplateName "RDS-Master-Template" `
+                  -VirtualDesktopTemplateHostServer $Broker `
+                  -VirtualDesktopAllocation @{ $Broker = 1 } `
+                  -StorageType LocalStorage `
+                  -VirtualDesktopNamePrefix "VDI-NTV-" `
+                  -VirtualDesktopPasswordAge 31 `
+                  -Path $DiskPath `
+                  -Confirm:$false
+
           }
           else {
               Write-Host "[*] VDI-Cloud-Pool already exists."
@@ -667,16 +542,8 @@ jobs:
           Write-Host "=========================================="
 
           Get-RDVirtualDesktopCollection `
-            -ConnectionBroker $Broker |
-            Format-Table `
-              CollectionName,
-              CollectionDescription
-
-
-      # ==========================================================
-      # STAGE 7
-      # RDS WEB ACCESS
-      # ==========================================================
+              -ConnectionBroker $Broker |
+              Format-Table CollectionName,CollectionDescription
 
       - name: "Show RDS Web Access Information"
         shell: powershell
@@ -697,12 +564,6 @@ jobs:
 
           Write-Host ""
           Write-Host "Tailscale is managed by win-rdp-enabler."
-
-
-      # ==========================================================
-      # STAGE 8
-      # KEEP ALIVE
-      # ==========================================================
 
       - name: "Start VDI Engine and Keep Alive"
         shell: powershell
@@ -730,6 +591,7 @@ jobs:
           Write-Host "https://$Broker/RDWeb"
 
           while ($true) {
+
               Write-Host ""
               Write-Host "=========================================="
               Write-Host "  VDI STATUS - $(Get-Date)"
@@ -739,43 +601,31 @@ jobs:
               Write-Host "Hyper-V VMs:"
 
               Get-VM |
-                Format-Table `
-                  Name,
-                  State,
-                  CPUUsage,
-                  MemoryAssigned,
-                  Uptime
+                  Format-Table Name,State,CPUUsage,MemoryAssigned,Uptime
 
               Write-Host ""
               Write-Host "RDS Collections:"
 
               Get-RDVirtualDesktopCollection `
-                -ConnectionBroker $Broker `
-                -ErrorAction SilentlyContinue |
-                Format-Table `
-                  CollectionName,
-                  CollectionDescription
+                  -ConnectionBroker $Broker `
+                  -ErrorAction SilentlyContinue |
+                  Format-Table CollectionName,CollectionDescription
 
               Write-Host ""
               Write-Host "RDS Servers:"
 
               Get-RDServer `
-                -ConnectionBroker $Broker `
-                -ErrorAction SilentlyContinue |
-                Format-Table `
-                  Server,
-                  Roles
+                  -ConnectionBroker $Broker `
+                  -ErrorAction SilentlyContinue |
+                  Format-Table Server,Roles
 
               Write-Host ""
               Write-Host "VDI NAT:"
 
               Get-NetNat `
-                -Name "VDI-NAT" `
-                -ErrorAction SilentlyContinue |
-                Format-Table `
-                  Name,
-                  InternalIPInterfaceAddressPrefix,
-                  Active
+                  -Name "VDI-NAT" `
+                  -ErrorAction SilentlyContinue |
+                  Format-Table Name,InternalIPInterfaceAddressPrefix,Active
 
               Write-Host ""
               Write-Host "Time: $(Get-Date)"
