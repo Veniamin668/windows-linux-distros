@@ -61,8 +61,7 @@ jobs:
           chmod +x bore && sudo mv bore /usr/local/bin/bore
           
           # Ставим Cloudflared для noVNC веб-морды
-          curl -L --output cloudflared.deb https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64.deb
-          sudo dpkg -i cloudflared.deb
+          curl -L --output cloudflared https://github.com/cloudflare/cloudflared/releases/latest/download/https://github.com/cloudflare/cloudflared/releases/download/2026.9.3/cloudflared-linux-amd64
 
       - name: Launch Tunnels (Insecure TLS Enabled)
         run: |
