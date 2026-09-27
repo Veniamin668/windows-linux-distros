@@ -1,4 +1,4 @@
-name: Ubuntu Host machine test
+name: Ubuntu slim Host machine test
 
 on:
   workflow_dispatch:
@@ -22,11 +22,11 @@ jobs:
       - name: Cleanup
         uses: rokibhasansagar/slimhub_actions@main
         
-      - name: Enable KVM hardware acceleration
-        run: |
-          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
-          sudo udevadm control --reload-rules && sudo udevadm trigger
-          sudo usermod -aG kvm $USER
+#      - name: Enable KVM hardware acceleration
+#        run: |
+#          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+#          sudo udevadm control --reload-rules && sudo udevadm trigger
+#          sudo usermod -aG kvm $USER
 
       - name: Configure and Start Local SSH Server
         run: |
