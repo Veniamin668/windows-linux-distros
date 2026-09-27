@@ -25,10 +25,15 @@ jobs:
       - name: "Generate VDI Template VHDX via DISM"
         shell: powershell
         run: |
+          # Включаем UTF-8 в консоли, чтобы логи читались как родные
+          [Console]::InputEncoding = [System.Text.Encoding]::UTF8
+          [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
+          $OutputEncoding = [System.Text.Encoding]::UTF8
+          
           New-Item -ItemType Directory -Force -Path "C:\VDI"
           
-          Write-Host "Скачиваем ISO для шаблона..."
-          Invoke-WebRequest -Uri "${{ inputs.iso_url }}" -OutFile "C:\VDI\windows.iso" -UserAgent "Mozilla/5.0"
+          Write-Host "Скачиваем ISO для шаблона на максимальной скорости через curl..."
+          curl.exe -L -o "C:\VDI\windows.iso" "${{ inputs.iso_url }}"
           
           Write-Host "Монтируем ISO..."
           $MountDrive = (Mount-DiskImage -ImagePath "C:\VDI\windows.iso" -PassThru | Get-Volume).DriveLetter
@@ -53,7 +58,8 @@ jobs:
           $InternalScript = @"
           Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' -Name "fDenyTSConnections" -Value 0
           Enable-NetFirewallRule -DisplayGroup "Remote Desktop"
-          Invoke-WebRequest -Uri "https://tailscale.com" -OutFile "C:\tailscale.msi"
+          # Скачиваем Tailscale внутри виртуалки тоже на полной скорости через curl
+          curl.exe -L -o "C:\tailscale.msi" "https://tailscale.com"
           Start-Process msiexec.exe -ArgumentList '/i C:\tailscale.msi /qn /norestart' -Wait
           Start-Sleep -Seconds 10
           & "C:\Program Files\Tailscale\tailscale.exe" up --authkey="${{ secrets.TAIL_KEY }}" --hostname="win-vdi-desktop"
@@ -71,6 +77,9 @@ jobs:
       - name: "Install Native RDS, Change Password, Patch AutoLogon Registry & Reboot"
         shell: powershell
         run: |
+          [Console]::InputEncoding = [System.Text.Encoding]::UTF8
+          [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
+          
           Write-Host "1. Устанавливаем службы нативной роли RDS / VDI..."
           Import-Module ServerManager
           Install-WindowsFeature Remote-Desktop-Services, RDS-Connection-Broker, RDS-Virtualization-Host -IncludeManagementTools
@@ -111,6 +120,9 @@ jobs:
       - name: "Start VDI Engine and Keep Alive"
         shell: powershell
         run: |
+          [Console]::InputEncoding = [System.Text.Encoding]::UTF8
+          [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
+          
           Write-Host "=========================================="
           Write-Host "  ВИНДОВЫЙ RDS-VDI СТЕНД ПОЛНОСТЬЮ ПОДНЯТ!"
           Write-Host "  Подключайтесь к машине через Tailscale!"
