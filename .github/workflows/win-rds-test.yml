@@ -32,21 +32,141 @@ jobs:
           $ErrorActionPreference = "Stop"
 
           $iso = "$env:RUNNER_TEMP\windows.iso"
+          $url = "${{ inputs.iso_url }}"
 
           Write-Host "=========================================="
           Write-Host "  DOWNLOADING WINDOWS ISO"
           Write-Host "=========================================="
 
-          Invoke-WebRequest `
-            -Uri "${{ inputs.iso_url }}" `
-            -OutFile $iso `
-            -UseBasicParsing
+          if (Test-Path $iso) {
+              Remove-Item $iso -Force
+          }
 
-          Write-Host "ISO: $iso"
-          Write-Host ("Size: {0:N2} GB" -f ((Get-Item $iso).Length / 1GB))
+          # --------------------------------------------------------
+          # Получаем размер файла через HEAD
+          # --------------------------------------------------------
+
+          Write-Host "Getting file size..."
+
+          $headers = curl.exe `
+            -s `
+            -L `
+            -I `
+            "$url" 2>$null
+
+          $contentLength = $null
+
+          foreach ($line in ($headers -split "`r?`n")) {
+              if ($line -match '(?i)^content-length:\s*(\d+)') {
+                  $contentLength = [int64]$Matches[1]
+              }
+          }
+
+          if ($contentLength) {
+              $totalGB = $contentLength / 1GB
+              Write-Host ("Total size: {0:N2} GB" -f $totalGB)
+          }
+          else {
+              Write-Host "Total size: unknown"
+          }
+
+          Write-Host ""
+          Write-Host "Starting download..."
+
+          # --------------------------------------------------------
+          # Запускаем curl полностью без вывода
+          # --------------------------------------------------------
+
+          $curlArgs = @(
+              "-L"
+              "--fail"
+              "--retry", "5"
+              "--retry-delay", "5"
+              "--retry-all-errors"
+              "-C", "-"
+              "-o", $iso
+              $url
+          )
+
+          $process = Start-Process `
+            -FilePath "curl.exe" `
+            -ArgumentList $curlArgs `
+            -NoNewWindow `
+            -PassThru `
+            -RedirectStandardOutput "$env:RUNNER_TEMP\curl.out" `
+            -RedirectStandardError "$env:RUNNER_TEMP\curl.err"
+
+          # --------------------------------------------------------
+          # Красивый прогресс
+          # --------------------------------------------------------
+
+          while (-not $process.HasExited) {
+
+              if (Test-Path $iso) {
+
+                  $downloaded = (Get-Item $iso).Length
+                  $downloadedGB = $downloaded / 1GB
+
+                  if ($contentLength) {
+
+                      $percent = ($downloaded / $contentLength) * 100
+
+                      if ($percent -gt 100) {
+                          $percent = 100
+                      }
+
+                      $remaining = $contentLength - $downloaded
+
+                      if ($remaining -lt 0) {
+                          $remaining = 0
+                      }
+
+                      $remainingGB = $remaining / 1GB
+
+                      Write-Host -NoNewline "`rDownloaded: $($downloadedGB.ToString('N2')) / $($totalGB.ToString('N2')) GB  |  $($percent.ToString('N1'))%  |  Remaining: $($remainingGB.ToString('N2')) GB    "
+                  }
+                  else {
+
+                      Write-Host -NoNewline "`rDownloaded: $($downloadedGB.ToString('N2')) GB    "
+                  }
+              }
+
+              Start-Sleep -Seconds 2
+          }
+
+          $process.WaitForExit()
+
+          Write-Host ""
+          Write-Host ""
+
+          # --------------------------------------------------------
+          # Проверяем результат curl
+          # --------------------------------------------------------
+
+          if ($process.ExitCode -ne 0) {
+
+              Write-Host "curl output:"
+              if (Test-Path "$env:RUNNER_TEMP\curl.err") {
+                  Get-Content "$env:RUNNER_TEMP\curl.err"
+              }
+
+              throw "curl failed with exit code $($process.ExitCode)"
+          }
+
+          if (-not (Test-Path $iso)) {
+              throw "ISO was not downloaded."
+          }
+
+          $finalSize = (Get-Item $iso).Length
+
+          Write-Host "=========================================="
+          Write-Host "  DOWNLOAD COMPLETE"
+          Write-Host "=========================================="
+          Write-Host ("File: $iso")
+          Write-Host ("Size: {0:N2} GB" -f ($finalSize / 1GB))
 
       # ============================================================
-      # 2. MOUNT ISO + FIND INSTALL IMAGE
+      # 2. MOUNT WINDOWS ISO
       # ============================================================
 
       - name: Mount Windows ISO
@@ -64,17 +184,28 @@ jobs:
 
           Start-Sleep -Seconds 3
 
-          $disk = Get-DiskImage -ImagePath $iso |
-            Get-Volume
+          $volume = Get-DiskImage -ImagePath $iso |
+            Get-Volume |
+            Where-Object DriveLetter |
+            Select-Object -First 1
 
-          $drive = "$($disk.DriveLetter):"
+          if (-not $volume) {
+              throw "Could not determine ISO drive letter."
+          }
+
+          $drive = "$($volume.DriveLetter):"
 
           Write-Host "Mounted at: $drive"
 
-          "ISO_DRIVE=$drive" | Out-File `
-            -FilePath $env:GITHUB_ENV `
-            -Encoding utf8 `
-            -Append
+          "ISO_DRIVE=$drive" |
+            Out-File `
+              -FilePath $env:GITHUB_ENV `
+              -Encoding utf8 `
+              -Append
+
+      # ============================================================
+      # 3. LOCATE INSTALL.WIM / INSTALL.ESD
+      # ============================================================
 
       - name: Locate Windows Image
         shell: powershell
@@ -82,7 +213,7 @@ jobs:
           $ErrorActionPreference = "Stop"
 
           Write-Host "=========================================="
-          Write-Host "  LOCATING INSTALL IMAGE"
+          Write-Host "  LOCATING WINDOWS IMAGE"
           Write-Host "=========================================="
 
           $wim = Join-Path $env:ISO_DRIVE "sources\install.wim"
@@ -95,30 +226,31 @@ jobs:
               $image = $esd
           }
           else {
-              throw "install.wim/install.esd not found"
+              throw "install.wim/install.esd not found."
           }
 
           Write-Host "Image: $image"
 
-          "INSTALL_IMAGE=$image" | Out-File `
-            -FilePath $env:GITHUB_ENV `
-            -Encoding utf8 `
-            -Append
+          "INSTALL_IMAGE=$image" |
+            Out-File `
+              -FilePath $env:GITHUB_ENV `
+              -Encoding utf8 `
+              -Append
 
       # ============================================================
-      # 3. CREATE VHDX
+      # 4. CREATE MASTER VHDX
       # ============================================================
 
-      - name: Create VDI VHDX
+      - name: Create Master VHDX
         shell: powershell
         run: |
           $ErrorActionPreference = "Stop"
 
           Write-Host "=========================================="
-          Write-Host "  CREATING VDI VHDX"
+          Write-Host "  CREATING MASTER VHDX"
           Write-Host "=========================================="
 
-          $vhd = "$env:RUNNER_TEMP\windows-vdi.vhdx"
+          $vhd = "$env:RUNNER_TEMP\windows-vdi-master.vhdx"
 
           if (Test-Path $vhd) {
               Remove-Item $vhd -Force
@@ -127,36 +259,56 @@ jobs:
           New-VHD `
             -Path $vhd `
             -SizeBytes 60GB `
-            -Dynamic | Out-Null
+            -Dynamic |
+            Out-Null
 
-          Mount-VHD `
+          $mountedDisk = Mount-VHD `
             -Path $vhd `
-            -Passthru |
-            Initialize-Disk `
-              -PartitionStyle GPT `
-              -PassThru |
-            New-Partition `
-              -UseMaximumSize `
-              -AssignDriveLetter |
-            Format-Volume `
-              -FileSystem NTFS `
-              -NewFileSystemLabel "Windows" `
-              -Confirm:$false
+            -Passthru
+
+          $diskNumber = $mountedDisk.DiskNumber
+
+          Write-Host "Disk number: $diskNumber"
+
+          Initialize-Disk `
+            -Number $diskNumber `
+            -PartitionStyle GPT `
+            -PassThru |
+            Out-Null
+
+          $partition = New-Partition `
+            -DiskNumber $diskNumber `
+            -UseMaximumSize `
+            -AssignDriveLetter
+
+          Format-Volume `
+            -Partition $partition `
+            -FileSystem NTFS `
+            -NewFileSystemLabel "Windows" `
+            -Confirm:$false |
+            Out-Null
 
           Start-Sleep -Seconds 2
 
-          $disk = Get-VHD -Path $vhd
+          $target = "$($partition.DriveLetter):"
 
-          Write-Host "VHDX: $vhd"
-          Write-Host ("Maximum size: {0:N2} GB" -f ($disk.Size / 1GB))
+          Write-Host "Target: $target"
+          Write-Host "VHDX : $vhd"
 
-          "VDI_VHD=$vhd" | Out-File `
-            -FilePath $env:GITHUB_ENV `
-            -Encoding utf8 `
-            -Append
+          "VDI_VHD=$vhd" |
+            Out-File `
+              -FilePath $env:GITHUB_ENV `
+              -Encoding utf8 `
+              -Append
+
+          "VDI_TARGET=$target" |
+            Out-File `
+              -FilePath $env:GITHUB_ENV `
+              -Encoding utf8 `
+              -Append
 
       # ============================================================
-      # 4. APPLY WINDOWS IMAGE
+      # 5. APPLY WINDOWS IMAGE
       # ============================================================
 
       - name: Apply Windows Image
@@ -168,33 +320,39 @@ jobs:
           Write-Host "  APPLYING WINDOWS IMAGE"
           Write-Host "=========================================="
 
-          $vhd = $env:VDI_VHD
-
-          $partition = Get-Partition -DiskNumber (
-              (Get-DiskImage -ImagePath $vhd | Get-Disk).Number
-          ) |
-          Where-Object DriveLetter
-
-          $target = "$($partition.DriveLetter):"
-
-          Write-Host "Target: $target"
           Write-Host "Image : $env:INSTALL_IMAGE"
+          Write-Host "Target: $env:VDI_TARGET"
           Write-Host "Index : ${{ inputs.wim_index }}"
 
           dism.exe /Apply-Image `
             /ImageFile:"$env:INSTALL_IMAGE" `
             /Index:${{ inputs.wim_index }} `
-            /ApplyDir:"$target\" `
+            /ApplyDir:"$env:VDI_TARGET\" `
             /CheckIntegrity
 
           if ($LASTEXITCODE -ne 0) {
               throw "DISM Apply-Image failed: $LASTEXITCODE"
           }
 
+          Write-Host ""
           Write-Host "Windows image applied successfully."
 
-          bcdboot.exe "$target\Windows" `
-            /s "$target" `
+      # ============================================================
+      # 6. CREATE BOOT FILES
+      # ============================================================
+
+      - name: Configure VHDX Boot Files
+        shell: powershell
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          Write-Host "=========================================="
+          Write-Host "  CONFIGURING BOOT FILES"
+          Write-Host "=========================================="
+
+          bcdboot.exe `
+            "$env:VDI_TARGET\Windows" `
+            /s "$env:VDI_TARGET" `
             /f UEFI
 
           if ($LASTEXITCODE -ne 0) {
@@ -204,21 +362,30 @@ jobs:
           Write-Host "Boot files created."
 
       # ============================================================
-      # 5. DISMOUNT VHDX
+      # 7. DISMOUNT MASTER VHDX
       # ============================================================
 
-      - name: Dismount VDI VHDX
+      - name: Dismount Master VHDX
         shell: powershell
         run: |
           $ErrorActionPreference = "Stop"
 
+          Write-Host "=========================================="
+          Write-Host "  DISMOUNTING MASTER VHDX"
+          Write-Host "=========================================="
+
           Dismount-VHD `
             -Path $env:VDI_VHD
 
-          Write-Host "VHDX dismounted."
+          Write-Host "Master VHDX is now offline."
+
+          Get-VHD `
+            -Path $env:VDI_VHD |
+            Select-Object Path,Size,FileSize,MinimumSize,Type |
+            Format-List
 
       # ============================================================
-      # 6. INSTALL HYPER-V
+      # 8. INSTALL HYPER-V
       # ============================================================
 
       - name: Install Hyper-V
@@ -244,6 +411,8 @@ jobs:
                 -All `
                 -NoRestart
 
+              Write-Host "Hyper-V installation requested."
+
           }
           else {
               Write-Host "Hyper-V already installed."
@@ -255,7 +424,7 @@ jobs:
             Select-Object FeatureName,State
 
       # ============================================================
-      # 7. INSTALL RDS VIRTUALIZATION
+      # 9. INSTALL RDS VIRTUALIZATION
       # ============================================================
 
       - name: Install RDS Virtualization
@@ -272,7 +441,12 @@ jobs:
             -IncludeManagementTools
 
           $result |
-            Format-List Name,DisplayName,Success,RestartNeeded,ExitCode
+            Format-List `
+              Name,
+              DisplayName,
+              Success,
+              RestartNeeded,
+              ExitCode
 
           if (-not $result.Success) {
               throw "RDS-Virtualization installation failed."
@@ -282,7 +456,7 @@ jobs:
           Write-Host "Restart required: $($result.RestartNeeded)"
 
       # ============================================================
-      # 8. INSTALL RDS WEB ACCESS
+      # 10. INSTALL RDS WEB ACCESS
       # ============================================================
 
       - name: Install RDS Web Access
@@ -299,7 +473,12 @@ jobs:
             -IncludeManagementTools
 
           $result |
-            Format-List Name,DisplayName,Success,RestartNeeded,ExitCode
+            Format-List `
+              Name,
+              DisplayName,
+              Success,
+              RestartNeeded,
+              ExitCode
 
           if (-not $result.Success) {
               throw "RDS-Web-Access installation failed."
@@ -309,7 +488,7 @@ jobs:
           Write-Host "Restart required: $($result.RestartNeeded)"
 
       # ============================================================
-      # 9. VERIFY RDS WITHOUT REBOOT
+      # 11. VERIFY RDS WITHOUT REBOOT
       # ============================================================
 
       - name: Verify RDS Without Reboot
@@ -318,8 +497,11 @@ jobs:
           $ErrorActionPreference = "Stop"
 
           Write-Host "=========================================="
-          Write-Host "  RDS VERIFICATION WITHOUT REBOOT"
+          Write-Host "  VERIFICATION WITHOUT REBOOT"
           Write-Host "=========================================="
+
+          Write-Host ""
+          Write-Host "Windows Features:"
 
           Get-WindowsFeature `
             RDS-Virtualization,
@@ -328,9 +510,19 @@ jobs:
             Format-Table -AutoSize
 
           Write-Host ""
+          Write-Host "Hyper-V:"
+
+          Get-WindowsOptionalFeature `
+            -Online `
+            -FeatureName Microsoft-Hyper-V-All |
+            Select-Object FeatureName,State |
+            Format-Table -AutoSize
+
+          Write-Host ""
           Write-Host "Services:"
 
           Get-Service `
+            vmms,
             TermService,
             W3SVC `
             -ErrorAction SilentlyContinue |
@@ -338,22 +530,21 @@ jobs:
             Format-Table -AutoSize
 
           Write-Host ""
-          Write-Host "Hyper-V:"
+          Write-Host "Master VHDX:"
 
-          Get-Service `
-            vmms `
-            -ErrorAction SilentlyContinue |
-            Select-Object Name,Status,StartType |
-            Format-Table -AutoSize
+          Get-VHD `
+            -Path $env:VDI_VHD |
+            Select-Object Path,Size,FileSize,Type |
+            Format-List
 
           Write-Host ""
           Write-Host "=========================================="
           Write-Host "  NO HOST REBOOT"
-          Write-Host "  Continuing directly to VDI deployment."
+          Write-Host "  MASTER VHDX REMAINS OFFLINE"
           Write-Host "=========================================="
 
       # ============================================================
-      # 10. CREATE INTERNAL HYPER-V SWITCH
+      # 12. CREATE VDI NETWORK
       # ============================================================
 
       - name: Create VDI Network
@@ -375,7 +566,8 @@ jobs:
 
               New-VMSwitch `
                 -SwitchName $switchName `
-                -SwitchType Internal | Out-Null
+                -SwitchType Internal |
+                Out-Null
 
               Write-Host "Created switch: $switchName"
 
@@ -394,12 +586,13 @@ jobs:
               throw "Could not find VDI NAT adapter."
           }
 
-          $ip = Get-NetIPAddress `
+          $existingIP = Get-NetIPAddress `
             -InterfaceIndex $adapter.ifIndex `
             -AddressFamily IPv4 `
-            -ErrorAction SilentlyContinue
+            -ErrorAction SilentlyContinue |
+            Where-Object IPAddress -eq "192.168.250.1"
 
-          if (-not $ip) {
+          if (-not $existingIP) {
 
               New-NetIPAddress `
                 -IPAddress "192.168.250.1" `
@@ -409,7 +602,11 @@ jobs:
 
           }
 
-          if (-not (Get-NetNat -Name "VDI-NAT" -ErrorAction SilentlyContinue)) {
+          $nat = Get-NetNat `
+            -Name "VDI-NAT" `
+            -ErrorAction SilentlyContinue
+
+          if (-not $nat) {
 
               New-NetNat `
                 -Name "VDI-NAT" `
@@ -418,160 +615,51 @@ jobs:
 
           }
 
+          Write-Host ""
           Get-VMSwitch -Name $switchName |
-            Format-List Name,SwitchType
+            Select-Object Name,SwitchType |
+            Format-List
 
           Get-NetNat -Name "VDI-NAT" |
-            Format-List Name,InternalIPInterfaceAddressPrefix
-
-      # ============================================================
-      # 11. MOUNT VHDX
-      # ============================================================
-
-      - name: Mount VDI VHDX
-        shell: powershell
-        run: |
-          $ErrorActionPreference = "Stop"
-
-          Mount-VHD `
-            -Path $env:VDI_VHD
-
-          Start-Sleep -Seconds 2
-
-          Get-DiskImage `
-            -ImagePath $env:VDI_VHD |
-            Get-Disk |
-            Get-Partition |
-            Where-Object DriveLetter |
-            Select-Object DiskNumber,PartitionNumber,DriveLetter,Size |
-            Format-Table -AutoSize
-
-      # ============================================================
-      # 12. CREATE HYPER-V VM
-      # ============================================================
-
-      - name: Create VDI VM
-        shell: powershell
-        run: |
-          $ErrorActionPreference = "Stop"
-
-          Write-Host "=========================================="
-          Write-Host "  CREATING VDI VM"
-          Write-Host "=========================================="
-
-          $vmName = "RDS-Master-Template"
-
-          $existing = Get-VM `
-            -Name $vmName `
-            -ErrorAction SilentlyContinue
-
-          if ($existing) {
-              Write-Host "VM already exists."
-          }
-          else {
-
-              New-VM `
-                -Name $vmName `
-                -Generation 2 `
-                -MemoryStartupBytes 4GB `
-                -VHDPath $env:VDI_VHD `
-                -SwitchName "VDI-NAT" |
-                Out-Null
-
-          }
-
-          Set-VMProcessor `
-            -VMName $vmName `
-            -Count 2
-
-          Set-VMMemory `
-            -VMName $vmName `
-            -DynamicMemoryEnabled $true `
-            -MinimumBytes 2GB `
-            -StartupBytes 4GB `
-            -MaximumBytes 8GB
-
-          Set-VM `
-            -Name $vmName `
-            -AutomaticStartAction Nothing `
-            -AutomaticStopAction ShutDown
-
-          Get-VM -Name $vmName |
-            Select-Object Name,State,Generation,MemoryAssigned,ProcessorCount |
+            Select-Object Name,InternalIPInterfaceAddressPrefix |
             Format-List
 
       # ============================================================
-      # 13. START VDI VM
+      # 13. VERIFY MASTER IMAGE
       # ============================================================
 
-      - name: Start VDI VM
+      - name: Verify Master Image
         shell: powershell
         run: |
           $ErrorActionPreference = "Stop"
 
-          Start-VM `
-            -Name "RDS-Master-Template"
+          Write-Host "=========================================="
+          Write-Host "  MASTER IMAGE"
+          Write-Host "=========================================="
 
-          Start-Sleep -Seconds 10
+          Write-Host "Path:"
+          Write-Host $env:VDI_VHD
 
-          Get-VM `
-            -Name "RDS-Master-Template" |
-            Select-Object Name,State,Status,Heartbeat |
+          Write-Host ""
+          Write-Host "VHDX:"
+
+          Get-VHD `
+            -Path $env:VDI_VHD |
+            Select-Object Path,Size,FileSize,Type |
             Format-List
 
-      # ============================================================
-      # 14. CONFIGURE RDS CONNECTION BROKER
-      # ============================================================
+          Write-Host ""
+          Write-Host "Hyper-V VMs currently present:"
 
-      - name: Configure RDS Deployment
-        shell: powershell
-        run: |
-          $ErrorActionPreference = "Stop"
-
-          Write-Host "=========================================="
-          Write-Host "  CONFIGURING RDS DEPLOYMENT"
-          Write-Host "=========================================="
-
-          Import-Module RemoteDesktop -ErrorAction Stop
-
-          $sessionHost = "$env:COMPUTERNAME"
-
-          Write-Host "Connection Broker: $sessionHost"
-          Write-Host "Web Access       : $sessionHost"
-          Write-Host "Virtualization   : $sessionHost"
-
-          Get-RDServer |
-            Format-Table Server,Roles -AutoSize
-
-      # ============================================================
-      # 15. SHOW RDWEB STATUS
-      # ============================================================
-
-      - name: Show RDWeb Status
-        shell: powershell
-        run: |
-          Write-Host "=========================================="
-          Write-Host "  RD WEB ACCESS"
-          Write-Host "=========================================="
-
-          Get-Service `
-            W3SVC,
-            TSGateway,
-            SessionEnv `
-            -ErrorAction SilentlyContinue |
-            Select-Object Name,Status,StartType |
+          Get-VM |
+            Select-Object Name,State,Generation |
             Format-Table -AutoSize
 
           Write-Host ""
-          Write-Host "Host:"
-          Write-Host $env:COMPUTERNAME
-
-          Write-Host ""
-          Write-Host "Expected RDWeb endpoint:"
-          Write-Host "https://$env:COMPUTERNAME/RDWeb"
+          Write-Host "The master VHDX is NOT started as a VM."
 
       # ============================================================
-      # 16. ENABLE RDP / TAILSCALE
+      # 14. ENABLE RDP / TAILSCALE
       # ============================================================
 
       - name: Enable RDP Access
@@ -582,7 +670,7 @@ jobs:
           CUSTOM_PASSWORD: ${{ secrets.CUSTOM_PASSWORD }}
 
       # ============================================================
-      # 17. FINAL STATUS
+      # 15. FINAL STATUS
       # ============================================================
 
       - name: Final VDI Status
@@ -590,7 +678,7 @@ jobs:
         run: |
           Write-Host ""
           Write-Host "=========================================="
-          Write-Host "  NATIVE VDI DEPLOYMENT COMPLETE"
+          Write-Host "  NATIVE VDI DEPLOYMENT STATUS"
           Write-Host "=========================================="
 
           Write-Host ""
@@ -598,19 +686,28 @@ jobs:
           Write-Host $env:COMPUTERNAME
 
           Write-Host ""
-          Write-Host "VM:"
-          Get-VM -Name "RDS-Master-Template" |
-            Select-Object Name,State,Status,Generation,ProcessorCount,MemoryAssigned |
-            Format-List
-
-          Write-Host ""
           Write-Host "RDS roles:"
-          Get-WindowsFeature RDS-Virtualization,RDS-Web-Access |
+
+          Get-WindowsFeature `
+            RDS-Virtualization,
+            RDS-Web-Access |
             Select-Object Name,InstallState |
             Format-Table -AutoSize
 
           Write-Host ""
-          Write-Host "No host reboot was requested by this workflow."
+          Write-Host "Master VHDX:"
+          Write-Host $env:VDI_VHD
+
+          Write-Host ""
+          Write-Host "Hyper-V VMs:"
+
+          Get-VM |
+            Select-Object Name,State,Generation |
+            Format-Table -AutoSize
+
+          Write-Host ""
+          Write-Host "Host reboot:"
+          Write-Host "NOT REQUESTED"
 
           Write-Host ""
           Write-Host "=========================================="
@@ -619,20 +716,12 @@ jobs:
 
           while ($true) {
 
-              $vm = Get-VM `
-                -Name "RDS-Master-Template" `
-                -ErrorAction SilentlyContinue
-
-              if ($vm) {
-                  Write-Host (
-                    "[{0}] VM={1} State={2} CPU={3}% Memory={4}MB" -f `
-                    (Get-Date -Format "HH:mm:ss"),
-                    $vm.Name,
-                    $vm.State,
-                    $vm.CPUUsage,
-                    [math]::Round($vm.MemoryAssigned / 1MB)
-                  )
-              }
+              Write-Host (
+                "[{0}] Host={1} | VMs={2}" -f `
+                (Get-Date -Format "HH:mm:ss"),
+                $env:COMPUTERNAME,
+                ((Get-VM -ErrorAction SilentlyContinue).Count)
+              )
 
               Start-Sleep -Seconds 30
           }
