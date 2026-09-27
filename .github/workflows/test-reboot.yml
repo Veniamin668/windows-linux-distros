@@ -1,0 +1,153 @@
+name: Test Windows Runner Reboot Jobs
+
+on:
+  workflow_dispatch:
+
+jobs:
+  prepare:
+    name: "01 - Prepare and Reboot"
+    runs-on: windows-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Show Runner Identity
+        shell: powershell
+        run: |
+          Write-Host "=========================================="
+          Write-Host "JOB 1 - BEFORE REBOOT"
+          Write-Host "=========================================="
+          Write-Host ""
+
+          Write-Host "ComputerName: $env:COMPUTERNAME"
+          Write-Host "User: $env:USERNAME"
+
+          Write-Host ""
+          Write-Host "Runner processes:"
+          Get-Process hosted-compute-agent,Runner.Listener,Runner.Worker `
+            -ErrorAction SilentlyContinue |
+            Select-Object Name,Id,SessionId,StartTime,Path |
+            Format-Table -AutoSize
+
+          Write-Host ""
+          Write-Host "Runner.Listener:"
+          Get-ChildItem "C:\actions-runner\cached\*\bin\Runner.Listener.exe" `
+            -ErrorAction SilentlyContinue |
+            Sort-Object FullName |
+            Select-Object FullName
+
+      - name: Install Test Role
+        shell: powershell
+        run: |
+          Import-Module ServerManager
+
+          Write-Host "Installing RDS-Web-Access..."
+
+          $Result = Install-WindowsFeature `
+            -Name RDS-Web-Access `
+            -IncludeManagementTools `
+            -Restart:$false
+
+          $Result |
+            Format-List Success,RestartNeeded,ExitCode,FeatureResult
+
+          if (!$Result.Success) {
+            throw "RDS-Web-Access installation failed."
+          }
+
+          Write-Host "[+] RDS-Web-Access installed."
+
+      - name: Show State Before Reboot
+        shell: powershell
+        run: |
+          Write-Host "=========================================="
+          Write-Host "STATE BEFORE REBOOT"
+          Write-Host "=========================================="
+
+          Write-Host "ComputerName: $env:COMPUTERNAME"
+
+          Write-Host ""
+          Write-Host "RDS-Web-Access:"
+          Get-WindowsFeature -Name RDS-Web-Access |
+            Format-List Name,DisplayName,Installed,InstallState
+
+          Write-Host ""
+          Write-Host "Bootstrap tasks:"
+          Get-ScheduledTask -TaskName primer,HostedComputeAgent `
+            -ErrorAction SilentlyContinue |
+            Select-Object TaskName,State,LastRunTime,LastTaskResult |
+            Format-Table -AutoSize
+
+      - name: Reboot Runner
+        shell: powershell
+        run: |
+          Write-Host "=========================================="
+          Write-Host "REBOOTING RUNNER"
+          Write-Host "=========================================="
+
+          Write-Host "Computer: $env:COMPUTERNAME"
+          Write-Host "Rebooting in 15 seconds..."
+
+          Start-Sleep -Seconds 15
+
+          Restart-Computer -Force
+
+  continue:
+    name: "02 - Continue After Reboot"
+    needs: prepare
+    runs-on: windows-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Show Runner Identity
+        shell: powershell
+        run: |
+          Write-Host "=========================================="
+          Write-Host "JOB 2 - AFTER REBOOT"
+          Write-Host "=========================================="
+          Write-Host ""
+
+          Write-Host "ComputerName: $env:COMPUTERNAME"
+          Write-Host "User: $env:USERNAME"
+
+          Write-Host ""
+          Write-Host "Runner processes:"
+          Get-Process hosted-compute-agent,Runner.Listener,Runner.Worker `
+            -ErrorAction SilentlyContinue |
+            Select-Object Name,Id,SessionId,StartTime,Path |
+            Format-Table -AutoSize
+
+      - name: Check RDS State
+        shell: powershell
+        run: |
+          Import-Module ServerManager
+
+          Write-Host "=========================================="
+          Write-Host "RDS STATE"
+          Write-Host "=========================================="
+
+          $Feature = Get-WindowsFeature -Name RDS-Web-Access
+
+          $Feature |
+            Format-List Name,DisplayName,Installed,InstallState
+
+          if ($Feature.Installed) {
+            Write-Host "[+] RDS-Web-Access IS INSTALLED."
+          }
+          else {
+            Write-Host "[-] RDS-Web-Access IS NOT INSTALLED."
+          }
+
+      - name: Final Result
+        shell: powershell
+        run: |
+          Write-Host ""
+          Write-Host "=========================================="
+          Write-Host "TEST COMPLETE"
+          Write-Host "=========================================="
+          Write-Host ""
+
+          Write-Host "Job 2 runner:"
+          Write-Host $env:COMPUTERNAME
+          Write-Host ""
+
+          Write-Host "Compare this with Job 1."
