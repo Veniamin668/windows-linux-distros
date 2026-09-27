@@ -327,9 +327,6 @@ jobs:
 
           $diskNumber = [int]$env:MASTER_DISK
 
-          # --------------------------------------------------------
-          # Find EFI System Partition
-          # --------------------------------------------------------
           $efiPartition = Get-Partition -DiskNumber $diskNumber |
               Where-Object {
                   $_.GptType -eq "{C12A7328-F81F-11D2-BA4B-00A0C93EC93B}"
@@ -347,17 +344,16 @@ jobs:
           Write-Host "    Partition : $partitionNumber"
           Write-Host "    Size      : $([math]::Round($efiPartition.Size / 1MB, 2)) MB"
 
-          # --------------------------------------------------------
-          # Assign S: using classic DiskPart
-          # --------------------------------------------------------
           $diskpartFile = Join-Path $env:TEMP "efi.txt"
 
-          @"
-select disk $diskNumber
-select partition $partitionNumber
-assign letter=S
-exit
-"@ | Set-Content -Path $diskpartFile -Encoding ASCII
+          $diskpartLines = @(
+              "select disk $diskNumber"
+              "select partition $partitionNumber"
+              "assign letter=S"
+              "exit"
+          )
+
+          Set-Content -Path $diskpartFile -Value $diskpartLines -Encoding ASCII
 
           Write-Host "[*] Assigning S: to EFI partition..."
 
@@ -372,10 +368,6 @@ exit
           }
 
           Write-Host "[+] EFI assigned as S:"
-
-          # --------------------------------------------------------
-          # Verify Windows partition
-          # --------------------------------------------------------
           Write-Host "[+] OS : $env:MASTER_OS"
 
           if (-not (Test-Path "$env:MASTER_OS\Windows")) {
@@ -383,16 +375,9 @@ exit
           }
 
           Write-Host "[+] Windows installation found."
-
-          # --------------------------------------------------------
-          # Classic BCDBOOT
-          # --------------------------------------------------------
           Write-Host "[*] Running BCDBOOT..."
 
-          & bcdboot.exe `
-              "$env:MASTER_OS\Windows" `
-              /s S: `
-              /f UEFI
+          & bcdboot.exe "$env:MASTER_OS\Windows" /s S: /f UEFI
 
           $bcdbootExit = $LASTEXITCODE
 
