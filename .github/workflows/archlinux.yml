@@ -45,7 +45,7 @@ jobs:
       - name: Configure and Start Local SSH Server
         run: |
           sudo pacman -Sy
-          sudo pacman -S openssh-server netcat-openbsd --noconfirm --needed
+          sudo pacman -S openssh --noconfirm --needed
           echo "root:root" | sudo chpasswd
           sudo mkdir -p /var/run/sshd
           sudo sed -i 's/#PermitRootLogin.*/PermitRootLogin yes/' /etc/ssh/sshd_config
