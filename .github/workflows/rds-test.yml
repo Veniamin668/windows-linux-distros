@@ -150,7 +150,7 @@ jobs:
           dbus-daemon --system --fork
           
           xrdp-keygen xrdp /etc/xrdp/rsakeys.ini
-          xrdp-sesman --ns
+          xrdp-sesman --ns &
           xrdp &
           
           echo "=========================================="
