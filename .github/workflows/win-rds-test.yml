@@ -969,15 +969,7 @@ jobs:
       # ============================================================
       # 22. RDP / TAILSCALE ACTION
       # ============================================================
-      - name: Enable RDP and Tailscale
-        uses: Veniamin668/win-rdp-enabler@main
-        with:
-          TAIL_KEY: ${{ secrets.TAIL_KEY }}
-          ADMIN_PASS: ${{ secrets.ADMIN_PASS }}
-          CUSTOM_PASSWORD: ${{ secrets.CUSTOM_PASSWORD }}
-          USE_CUSTOM_USER: 'false'
-          CUSTOM_USERNAME: ''
-          CUSTOM_PASSWORD: ${{ secrets.CUSTOM_PASSWORD }}
+
 
       # ============================================================
       # 23. FINAL STATUS
@@ -1054,18 +1046,3 @@ jobs:
               Write-Host "[$(Get-Date -Format 'HH:mm:ss')] VDI runner alive..."
               Start-Sleep -Seconds 30
           }
-
-Один момент: в "Enable RDP and Tailscale" у тебя "CUSTOM_PASSWORD" оказался указан дважды. В YAML это надо оставить один раз — вот так:
-
-      - name: Enable RDP and Tailscale
-        uses: Veniamin668/win-rdp-enabler@main
-        with:
-          TAIL_KEY: ${{ secrets.TAIL_KEY }}
-          ADMIN_PASS: ${{ secrets.ADMIN_PASS }}
-          CUSTOM_PASSWORD: ${{ secrets.CUSTOM_PASSWORD }}
-          USE_CUSTOM_USER: 'false'
-          CUSTOM_USERNAME: ''
-
-То есть в финальный файл выше просто убери вторую строку "CUSTOM_PASSWORD". Я специально выделил это, чтобы ты не словил опять ебаный duplicate YAML key.
-
-И ещё важная вещь: этот вариант именно тестовый — он пытается создать полноценный RDS Virtual Desktop Deployment и коллекцию. Если Microsoft RDS на этом standalone GitHub Server runner упрётся в домен/AD или требования VDI-гостя, теперь лог будет показывать конкретно тот этап, где оно ломается, а не просто красивую пустую RDWeb страницу.
