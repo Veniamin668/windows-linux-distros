@@ -10,6 +10,10 @@ jobs:
     timeout-minutes: 360
 
     steps:
+      - name: install sudo
+        run: |
+          pacman -Sy
+          pacman -S sudo 
       - name: Maximize Build Space
         uses: easimon/maximize-build-space@master
         with:
