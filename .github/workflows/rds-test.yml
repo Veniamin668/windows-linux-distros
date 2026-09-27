@@ -1,31 +1,31 @@
-name: Deploy Custom Cloud Desktops (RDS Panel)
+name: Deploy Custom Cloud Desktops (RDS Native & Container Panel)
 
 on:
   workflow_dispatch:
     inputs:
       launch_arch:
-        description: 'Запустить Arch Linux?'
-        required: true
-        type: boolean
-        default: true
-      launch_ubuntu:
-        description: 'Запустить Ubuntu 24.04?'
+        description: 'Запустить Arch Linux (В контейнере)?'
         required: true
         type: boolean
         default: false
+      launch_ubuntu:
+        description: 'Запустить Ubuntu (НАТИВНО НА ХОСТЕ)?'
+        required: true
+        type: boolean
+        default: true
       launch_debian:
-        description: 'Запустить Debian Bookworm?'
+        description: 'Запустить Debian (В контейнере)?'
         required: true
         type: boolean
         default: false
       desktop_env:
         description: 'Выберите графическую оболочку (DE)'
         required: true
-        default: 'xfce'
+        default: 'kde'
         type: choice
         options:
-          - 'xfce'
           - 'kde'
+          - 'xfce'
           - 'gnome'
 
 jobs:
@@ -40,19 +40,25 @@ jobs:
         include:
           - os_name: 'archlinux'
             os_image: 'archlinux:latest'
-          - os_name: 'ubuntu'
-            os_image: 'ubuntu:24.04'
+            is_native: false
           - os_name: 'debian'
             os_image: 'debian:bookworm-slim'
+            is_native: false
+          - os_name: 'ubuntu'
+            os_image: 'none'
+            is_native: true
 
-    # Убираем все условия отсюда, чтобы не злить валидатор GitHub
+    # ГЛОБАЛЬНЫЙ IF ОТСЮДА ПОЛНОСТЬЮ УДАЛЕН, ЧТОБЫ ВАЛИДАТОР НЕ РУГАЛСЯ
+
     container:
       image: ${{ matrix.os_image }}
-      options: --privileged --device=/dev/kvm --device=/dev/net/tun --cap-add=NET_ADMIN
+      options: ${{ matrix.is_native == false && '--privileged --device=/dev/kvm --device=/dev/net/tun --cap-add=NET_ADMIN' || '' }}
 
     steps:
-      # Проверяем, нужно ли вообще запускать эту ОС. Если нет — шаги просто скипнутся.
-      - name: Check if this OS should be launched
+      # ==========================================
+      # ЭТАП 0: ПРОВЕРКА ГАЛОЧКИ ПОЛЬЗОВАТЕЛЯ
+      # ==========================================
+      - name: "Check if this OS should be launched"
         id: check_os
         run: |
           LAUNCH=false
@@ -63,31 +69,41 @@ jobs:
           echo "should_launch=$LAUNCH" >> $GITHUB_OUTPUT
 
       # ==========================================
-      # ЭТАП 1: ПОДКЛЮЧЕНИЕ СЕТИ (TAILSCALE)
+      # ЭТАП 1: УСТАНОВКА И ПОДКЛЮЧЕНИЕ TAILSCALE
       # ==========================================
-      - name: Connect to Tailscale Network
-        if: steps.check_os.outputs.should_launch == 'true'
+      
+      - name: "Arch Install and Start Tailscale"
+        if: steps.check_os.outputs.should_launch == 'true' && matrix.os_name == 'archlinux'
         run: |
-          if command -v pacman &> /dev/null; then
-            pacman -Syu --noconfirm tailscale curl
-          elif command -v apt-get &> /dev/null; then
-            apt-get update && apt-get install -y tailscale curl
-          fi
-          
+          pacman -Syu --noconfirm tailscale curl
           mkdir -p /var/run/tailscale /var/lib/tailscale
           tailscaled --state=/var/lib/tailscale/tailscaled.state > /dev/null 2>&1 &
-          sleep 5
-          
-          tailscale up --authkey="${{ secrets.TAIL_KEY }}" --hostname="desktop-${{ matrix.os_name }}"
+          sleep 3
+          tailscale up --authkey="${{ secrets.TAIL_KEY }}" --hostname="desktop-arch"
+
+      - name: "Debian Install and Start Tailscale"
+        if: steps.check_os.outputs.should_launch == 'true' && matrix.os_name == 'debian'
+        run: |
+          apt-get update && apt-get install -y tailscale curl
+          mkdir -p /var/run/tailscale /var/lib/tailscale
+          tailscaled --state=/var/lib/tailscale/tailscaled.state > /dev/null 2>&1 &
+          sleep 3
+          tailscale up --authkey="${{ secrets.TAIL_KEY }}" --hostname="desktop-debian"
+
+      - name: "Ubuntu-Native Connect to Tailscale"
+        if: steps.check_os.outputs.should_launch == 'true' && matrix.os_name == 'ubuntu'
+        uses: tailscale/github-action@v4
+        with:
+          authkey: ${{ secrets.TAIL_KEY }}
+          hostname: desktop-ubuntu
 
       # ==========================================
-      # ЭТАП 2: НАСТРОЙКА ДИСТРИБЮТИВА ARCH LINUX
+      # ЭТАП 2: СБОРКА ARCH LINUX (КОНТЕЙНЕР)
       # ==========================================
-      - name: Setup Arch Linux Desktop
+      - name: "Setup Arch Linux Desktop"
         if: steps.check_os.outputs.should_launch == 'true' && matrix.os_name == 'archlinux'
         run: |
           pacman -S --noconfirm base-devel git sudo dbus xorg-server xorg-apps nano
-          
           if [ "${{ inputs.desktop_env }}" = "kde" ]; then
             pacman -S --noconfirm plasma-desktop konsole plasma-nm
             DE_START="exec dbus-launch --exit-with-session startplasma-x11"
@@ -98,65 +114,94 @@ jobs:
             pacman -S --noconfirm xfce4 xfce4-goodies
             DE_START="exec startxfce4"
           fi
-          
           useradd -m -G wheel -s /bin/bash cloud
           echo "cloud:cloud" | chpasswd
           echo "cloud ALL=(ALL) NOPASSWD: ALL" >> /etc/sudoers
-          
-          su - cloud -c "cd /tmp && git clone https://aur.archlinux.org/yay-bin.git && cd yay-bin && makepkg -si --noconfirm"
+          git config --global --add safe.directory '*'
+          su - cloud -c "git config --global --add safe.directory '*'"
+          su - cloud -c "cd /tmp && git clone https://archlinux.org && cd yay-bin && makepkg -si --noconfirm"
           su - cloud -c 'yay -S --noconfirm --mflags "--nocheck" xrdp xorgxrdp'
-          
           echo "allowed_users=anybody" > /etc/X11/Xwrapper.config
           echo "$DE_START" > /home/cloud/.xinitrc
-          chmod +x /home/cloud/.xinitrc
-          chown cloud:cloud /home/cloud/.xinitrc
+          chmod +x /home/cloud/.xinitrc && chown cloud:cloud /home/cloud/.xinitrc
 
       # ==========================================
-      # ЭТАП 3: НАСТРОЙКА ДИСТРИБЮТИВА UBUNTU / DEBIAN
+      # ЭТАП 3: СБОРКА DEBIAN (КОНТЕЙНЕР)
       # ==========================================
-      - name: Setup Ubuntu/Debian Desktop
-        if: steps.check_os.outputs.should_launch == 'true' && (matrix.os_name == 'ubuntu' || matrix.os_name == 'debian')
+      - name: "Setup Debian Desktop"
+        if: steps.check_os.outputs.should_launch == 'true' && matrix.os_name == 'debian'
         env:
           DEBIAN_FRONTEND: noninteractive
         run: |
-          apt-get update && apt-get install -y sudo dbus xorg xrdp nano
-          
+          apt-get update && apt-get install -y sudo dbus dbus-x11 xorg xrdp nano
           if [ "${{ inputs.desktop_env }}" = "kde" ]; then
-            apt-get install -y kde-plasma-desktop
-            DE_START="startplasma-x11"
+            apt-get install -y kde-plasma-desktop konsole
+            DE_START="export DESKTOP_SESSION=plasma\nexport XDG_CURRENT_DESKTOP=KDE\nexport XDG_SESSION_TYPE=x11\nexec dbus-launch --exit-with-session startplasma-x11"
           elif [ "${{ inputs.desktop_env }}" = "gnome" ]; then
-            apt-get install -y ubuntu-desktop-minimal || apt-get install -y gnome-core
-            DE_START="gnome-session"
+            apt-get install -y gnome-session gnome-flashback
+            DE_START="export XDG_CURRENT_DESKTOP=GNOME-Flashback:GNOME\nexec dbus-launch --exit-with-session gnome-session --session=gnome-flashback-metacity"
           else
             apt-get install -y xfce4 xfce4-goodies
-            DE_START="startxfce4"
+            DE_START="exec startxfce4"
           fi
-          
           useradd -m -s /bin/bash cloud
           echo "cloud:cloud" | chpasswd
           echo "cloud ALL=(ALL) NOPASSWD: ALL" >> /etc/sudoers
-          
           echo "allowed_users=anybody" > /etc/X11/Xwrapper.config
-          echo "$DE_START" > /home/cloud/.xsession
+          echo -e "$DE_START" > /home/cloud/.xsession
           chown cloud:cloud /home/cloud/.xsession
 
       # ==========================================
-      # ЭТАП 4: ЕДИНЫЙ ЗАПУСК СЕРВИСОВ И ОЖИДАНИЕ
+      # ЭТАП 4: НАСТРОЙКА НАТИВНОЙ UBUNTU (ХОСТ)
       # ==========================================
-      - name: Start RDS Services and Keep Alive
+      - name: "Setup Native Ubuntu Desktop"
+        if: steps.check_os.outputs.should_launch == 'true' && matrix.os_name == 'ubuntu'
+        env:
+          DEBIAN_FRONTEND: noninteractive
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y xrdp xorg dbus-x11 nano
+          
+          if [ "${{ inputs.desktop_env }}" = "kde" ]; then
+            sudo apt-get install -y kubuntu-desktop
+            DE_START="startplasma-x11"
+          elif [ "${{ inputs.desktop_env }}" = "gnome" ]; then
+            sudo apt-get install -y ubuntu-desktop
+            DE_START="gnome-session"
+          else
+            sudo apt-get install -y xfce4 xfce4-goodies
+            DE_START="startxfce4"
+          fi
+          
+          sudo useradd -m -s /bin/bash cloud
+          echo "cloud:cloud" | sudo chpasswd
+          echo "cloud ALL=(ALL) NOPASSWD: ALL" | sudo tee -a /etc/sudoers
+          
+          sudo sed -i 's/allowed_users=console/allowed_users=anybody/g' /etc/X11/Xwrapper.config || echo "allowed_users=anybody" | sudo tee /etc/X11/Xwrapper.config
+          echo "$DE_START" > ~/.xsession
+          echo "$DE_START" | tee /home/cloud/.xsession
+          sudo chown cloud:cloud /home/cloud/.xsession
+          
+          sudo systemctl restart xrdp
+          sudo systemctl enable xrdp
+
+      # ==========================================
+      # ЭТАП 5: ЕДИНЫЙ ЗАПУСК И ОЖИДАНИЕ
+      # ==========================================
+      - name: "Start Services and Keep Alive"
         if: steps.check_os.outputs.should_launch == 'true'
         run: |
-          mkdir -p /run/dbus /var/run/xrdp
-          dbus-daemon --system --fork
-          
-          xrdp-keygen xrdp /etc/xrdp/rsakeys.ini
-          xrdp-sesman --ns &
-          xrdp &
+          if [ "${{ matrix.is_native }}" = "false" ]; then
+            mkdir -p /run/dbus /var/run/xrdp
+            dbus-daemon --system --fork 2>/dev/null || true
+            xrdp-keygen xrdp /etc/xrdp/rsakeys.ini
+            xrdp-sesman --ns &
+            xrdp &
+          fi
           
           echo "=========================================="
-          echo "  СТЕНД ДЛЯ [${{ matrix.os_name }}] ГОТОВ!"
-          echo "  Устройство в Tailscale: desktop-${{ matrix.os_name }}"
-          echo "  Логин RDP: cloud"
-          echo "  Пароль RDP: cloud"
+          echo "  СТЕНД ДЛЯ [${{ matrix.os_name }}] УСПЕШНО ПОДНЯТ!"
+          echo "  Логин RDP: cloud | Пароль RDP: cloud"
           echo "=========================================="
-          tail -f /var/log/xrdp.log /var/log/xrdp-sesman.log 2>/dev/null || sleep infinity
+          
+          sleep infinity
