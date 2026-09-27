@@ -4,13 +4,13 @@ on:
   workflow_dispatch:
     inputs:
       iso_url:
-        description: 'Прямая ссылка на ISO Windows Server / Windows 11 для шаблона VDI'
+        description: 'Direct URL to Windows Server / Windows 11 ISO'
         required: true
         default: ''
         type: string
 
       wim_index:
-        description: 'Индекс редакции Windows в install.wim/install.esd'
+        description: 'Windows image index in install.wim/install.esd'
         required: true
         default: '2'
         type: string
@@ -23,15 +23,13 @@ jobs:
     steps:
 
       # ==========================================================
-      # ЭТАП 1
+      # STAGE 1
       # WINDOWS ISO -> MASTER VHDX
       # ==========================================================
 
-      - name: Generate VDI Master VHDX via DISM
+      - name: "Generate VDI Master VHDX via DISM"
         shell: powershell
         run: |
-          [Console]::InputEncoding = [System.Text.Encoding]::UTF8
-          [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
           $OutputEncoding = [System.Text.Encoding]::UTF8
 
           $WorkDir = "${{ github.workspace }}\vdi_build"
@@ -45,13 +43,10 @@ jobs:
           Write-Host "  WINDOWS VDI MASTER IMAGE BUILD"
           Write-Host "=========================================="
 
-          # ------------------------------------------------------
           # DOWNLOAD ISO
-          # ------------------------------------------------------
-
           $IsoPath = "$WorkDir\windows.iso"
 
-          Write-Host "[1/8] Скачиваем Windows ISO..."
+          Write-Host "[1/8] Downloading Windows ISO..."
 
           curl.exe `
             -L `
@@ -61,17 +56,14 @@ jobs:
             "${{ inputs.iso_url }}"
 
           if (!(Test-Path $IsoPath)) {
-              throw "Windows ISO не был скачан."
+              throw "Windows ISO was not downloaded."
           }
 
-          Write-Host "[+] ISO скачан."
-          Write-Host ("    Размер: {0:N2} GB" -f ((Get-Item $IsoPath).Length / 1GB))
+          Write-Host "[+] ISO downloaded."
+          Write-Host ("    Size: {0:N2} GB" -f ((Get-Item $IsoPath).Length / 1GB))
 
-          # ------------------------------------------------------
           # MOUNT ISO
-          # ------------------------------------------------------
-
-          Write-Host "[2/8] Монтируем ISO..."
+          Write-Host "[2/8] Mounting ISO..."
 
           $IsoImage = Mount-DiskImage `
             -ImagePath $IsoPath `
@@ -85,17 +77,14 @@ jobs:
             Select-Object -First 1
 
           if (!$IsoVolume) {
-              throw "Не удалось получить букву диска ISO."
+              throw "Failed to determine ISO drive letter."
           }
 
           $IsoDrive = "$($IsoVolume.DriveLetter):"
 
           Write-Host "[+] ISO mounted: $IsoDrive"
 
-          # ------------------------------------------------------
           # FIND INSTALL.WIM / INSTALL.ESD
-          # ------------------------------------------------------
-
           $WimPath = "$IsoDrive\sources\install.wim"
           $EsdPath = "$IsoDrive\sources\install.esd"
 
@@ -106,16 +95,13 @@ jobs:
               $ImagePath = $EsdPath
           }
           else {
-              throw "install.wim/install.esd не найден."
+              throw "install.wim/install.esd was not found."
           }
 
           Write-Host "[+] Image: $ImagePath"
 
-          # ------------------------------------------------------
           # CREATE VHDX
-          # ------------------------------------------------------
-
-          Write-Host "[3/8] Создаем динамический VHDX..."
+          Write-Host "[3/8] Creating dynamic VHDX..."
 
           $VhdPath = "$WorkDir\vdi_template.vhdx"
 
@@ -130,11 +116,8 @@ jobs:
             -SizeBytes 60GB `
             -Dynamic | Out-Null
 
-          # ------------------------------------------------------
           # MOUNT VHDX
-          # ------------------------------------------------------
-
-          Write-Host "[4/8] Инициализируем VHDX..."
+          Write-Host "[4/8] Initializing VHDX..."
 
           $Vhd = Mount-VHD `
             -Path $VhdPath `
@@ -160,11 +143,8 @@ jobs:
 
           Write-Host "[+] VHDX mounted as T:"
 
-          # ------------------------------------------------------
           # APPLY WINDOWS IMAGE
-          # ------------------------------------------------------
-
-          Write-Host "[5/8] Разворачиваем Windows через DISM..."
+          Write-Host "[5/8] Applying Windows image with DISM..."
 
           DISM.exe `
             /Apply-Image `
@@ -173,14 +153,11 @@ jobs:
             /ApplyDir:T:\
 
           if ($LASTEXITCODE -ne 0) {
-              throw "DISM /Apply-Image завершился с кодом $LASTEXITCODE"
+              throw "DISM /Apply-Image failed with exit code $LASTEXITCODE"
           }
 
-          # ------------------------------------------------------
           # BOOTLOADER
-          # ------------------------------------------------------
-
-          Write-Host "[6/8] Создаем UEFI boot configuration..."
+          Write-Host "[6/8] Creating UEFI boot configuration..."
 
           bcdboot.exe `
             T:\Windows `
@@ -188,14 +165,11 @@ jobs:
             /f UEFI
 
           if ($LASTEXITCODE -ne 0) {
-              throw "BCDBOOT завершился с ошибкой."
+              throw "BCDBOOT failed."
           }
 
-          # ------------------------------------------------------
           # FINALIZE MASTER
-          # ------------------------------------------------------
-
-          Write-Host "[7/8] Финализируем VHDX..."
+          Write-Host "[7/8] Finalizing VHDX..."
 
           Dismount-VHD `
             -Path $VhdPath
@@ -205,46 +179,37 @@ jobs:
 
           Write-Host ""
           Write-Host "=========================================="
-          Write-Host "  VDI MASTER VHDX ГОТОВ"
+          Write-Host "  VDI MASTER VHDX READY"
           Write-Host "=========================================="
           Write-Host "VHDX: $VhdPath"
 
 
       # ==========================================================
-      # ЭТАП 2
+      # STAGE 2
       # HYPER-V + RDS + WEB ACCESS + AUTOLOGON
       # ==========================================================
 
-      - name: Install Native Hyper-V and RDS Roles
+      - name: "Install Native Hyper-V and RDS Roles"
         shell: powershell
         env:
           SECURE_ADMIN_PASS: ${{ secrets.ADMIN_PASS }}
         run: |
-          [Console]::InputEncoding = [System.Text.Encoding]::UTF8
-          [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
-
           Write-Host "=========================================="
           Write-Host "  WINDOWS SERVER ROLES"
           Write-Host "=========================================="
 
           Import-Module ServerManager
 
-          # ------------------------------------------------------
           # HYPER-V
-          # ------------------------------------------------------
-
-          Write-Host "[1] Устанавливаем Hyper-V..."
+          Write-Host "[1] Installing Hyper-V..."
 
           Install-WindowsFeature `
             Hyper-V `
             Hyper-V-PowerShell `
             -IncludeManagementTools
 
-          # ------------------------------------------------------
           # RDS
-          # ------------------------------------------------------
-
-          Write-Host "[2] Устанавливаем RDS Virtualization + Web Access..."
+          Write-Host "[2] Installing RDS Virtualization and Web Access..."
 
           Install-WindowsFeature `
             Remote-Desktop-Services `
@@ -252,14 +217,11 @@ jobs:
             RDS-Web-Access `
             -IncludeManagementTools
 
-          # ------------------------------------------------------
           # PASSWORD
-          # ------------------------------------------------------
-
-          Write-Host "[3] Настраиваем пароль runneradmin..."
+          Write-Host "[3] Configuring runneradmin password..."
 
           if ([string]::IsNullOrWhiteSpace($env:SECURE_ADMIN_PASS)) {
-              throw "ADMIN_PASS secret пуст."
+              throw "ADMIN_PASS secret is empty."
           }
 
           $SecurePassword = ConvertTo-SecureString `
@@ -271,11 +233,8 @@ jobs:
             -Name "runneradmin" `
             -Password $SecurePassword
 
-          # ------------------------------------------------------
           # AUTOLOGON
-          # ------------------------------------------------------
-
-          Write-Host "[4] Настраиваем Windows AutoLogon..."
+          Write-Host "[4] Configuring Windows AutoLogon..."
 
           $RegPath = `
             "HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Winlogon"
@@ -310,13 +269,14 @@ jobs:
 
 
       # ==========================================================
-      # ЭТАП 3
-      # ТВОЙ WIN-RDP-ENABLER
+      # STAGE 3
+      # YOUR WIN-RDP-ENABLER
       #
-      # НИ TAILSCALE, НИ RDP FIREWALL ЗДЕСЬ НЕ ДУБЛИРУЕМ
+      # NO TAILSCALE INSTALLATION HERE
+      # NO RDP FIREWALL RULES HERE
       # ==========================================================
 
-      - name: Run Win RDP Enabler (Post-Reboot Connect)
+      - name: "Run Win RDP Enabler (Post-Reboot Connect)"
         uses: Veniamin668/win-rdp-enabler@main
         env:
           TAIL_KEY: ${{ secrets.TAIL_KEY }}
@@ -327,15 +287,13 @@ jobs:
 
 
       # ==========================================================
-      # ЭТАП 4
-      # СОЗДАНИЕ СОБСТВЕННОЙ HYPER-V NAT СЕТИ
+      # STAGE 4
+      # HYPER-V NAT NETWORK
       # ==========================================================
 
-      - name: Create VDI Hyper-V NAT Network
+      - name: "Create VDI Hyper-V NAT Network"
         shell: powershell
         run: |
-          [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
-
           Write-Host "=========================================="
           Write-Host "  CONFIGURING VDI NETWORK"
           Write-Host "=========================================="
@@ -345,10 +303,7 @@ jobs:
           $Prefix = "192.168.250.0/24"
           $NatName = "VDI-NAT"
 
-          # ------------------------------------------------------
           # CREATE INTERNAL SWITCH
-          # ------------------------------------------------------
-
           $ExistingSwitch = `
             Get-VMSwitch `
               -Name $SwitchName `
@@ -356,7 +311,7 @@ jobs:
 
           if (!$ExistingSwitch) {
 
-              Write-Host "[+] Создаем Hyper-V Internal Switch..."
+              Write-Host "[+] Creating Hyper-V Internal Switch..."
 
               New-VMSwitch `
                 -Name $SwitchName `
@@ -365,16 +320,13 @@ jobs:
           }
           else {
 
-              Write-Host "[*] VDI-NAT switch уже существует."
+              Write-Host "[*] VDI-NAT switch already exists."
 
           }
 
           Start-Sleep -Seconds 2
 
-          # ------------------------------------------------------
           # FIND HYPER-V VIRTUAL ETHERNET ADAPTER
-          # ------------------------------------------------------
-
           $Adapter = Get-NetAdapter |
             Where-Object {
                 $_.Name -like "*$SwitchName*"
@@ -393,15 +345,12 @@ jobs:
           }
 
           if (!$Adapter) {
-              throw "Не найден Hyper-V Virtual Ethernet Adapter."
+              throw "Hyper-V Virtual Ethernet Adapter was not found."
           }
 
           Write-Host "[+] Adapter: $($Adapter.Name)"
 
-          # ------------------------------------------------------
           # CONFIGURE GATEWAY IP
-          # ------------------------------------------------------
-
           $ExistingIP = Get-NetIPAddress `
             -InterfaceIndex $Adapter.ifIndex `
             -AddressFamily IPv4 `
@@ -412,7 +361,7 @@ jobs:
 
           if (!$ExistingIP) {
 
-              Write-Host "[+] Назначаем gateway $GatewayIP..."
+              Write-Host "[+] Assigning gateway $GatewayIP..."
 
               New-NetIPAddress `
                 -InterfaceIndex $Adapter.ifIndex `
@@ -423,14 +372,11 @@ jobs:
           }
           else {
 
-              Write-Host "[*] Gateway уже настроен."
+              Write-Host "[*] Gateway already configured."
 
           }
 
-          # ------------------------------------------------------
           # CREATE NAT
-          # ------------------------------------------------------
-
           $ExistingNat = `
             Get-NetNat `
               -Name $NatName `
@@ -438,7 +384,7 @@ jobs:
 
           if (!$ExistingNat) {
 
-              Write-Host "[+] Создаем NAT $Prefix..."
+              Write-Host "[+] Creating NAT $Prefix..."
 
               New-NetNat `
                 -Name $NatName `
@@ -448,7 +394,7 @@ jobs:
           }
           else {
 
-              Write-Host "[*] NAT уже существует."
+              Write-Host "[*] NAT already exists."
 
           }
 
@@ -462,15 +408,13 @@ jobs:
 
 
       # ==========================================================
-      # ЭТАП 5
+      # STAGE 5
       # MASTER VM
       # ==========================================================
 
-      - name: Create RDS Master Template VM
+      - name: "Create RDS Master Template VM"
         shell: powershell
         run: |
-          [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
-
           Import-Module Hyper-V
 
           $VMName = "RDS-Master-Template"
@@ -487,10 +431,7 @@ jobs:
           Write-Host "  CREATING MASTER VM"
           Write-Host "=========================================="
 
-          # ------------------------------------------------------
           # REMOVE OLD MASTER
-          # ------------------------------------------------------
-
           $ExistingVM = `
             Get-VM `
               -Name $VMName `
@@ -498,7 +439,7 @@ jobs:
 
           if ($ExistingVM) {
 
-              Write-Host "[*] Старый Master найден."
+              Write-Host "[*] Existing Master VM found."
 
               if ($ExistingVM.State -ne "Off") {
 
@@ -514,46 +455,34 @@ jobs:
                 -Force
           }
 
-          # ------------------------------------------------------
           # CREATE MASTER
-          # ------------------------------------------------------
-
           New-VM `
             -Name $VMName `
             -Generation 2 `
             -MemoryStartupBytes 4GB `
             -VHDPath $VhdPath `
             -Path $VMPath `
-            -SwitchName $SwitchName
+            -SwitchName "VDI-NAT"
 
-          # ------------------------------------------------------
           # CPU
-          # ------------------------------------------------------
-
           Set-VMProcessor `
             -VMName $VMName `
             -Count 4
 
-          # ------------------------------------------------------
           # NETWORK
-          # ------------------------------------------------------
-
           Get-VMNetworkAdapter `
             -VMName $VMName |
             Set-VMNetworkAdapter `
               -SwitchName "VDI-NAT"
 
-          # ------------------------------------------------------
           # SECURE BOOT
-          # ------------------------------------------------------
-
           Set-VMFirmware `
             -VMName $VMName `
             -EnableSecureBoot On `
             -SecureBootTemplate "MicrosoftWindows"
 
           Write-Host ""
-          Write-Host "[+] Master VM создана."
+          Write-Host "[+] Master VM created."
 
           Get-VM `
             -Name $VMName |
@@ -566,15 +495,13 @@ jobs:
 
 
       # ==========================================================
-      # ЭТАП 6
+      # STAGE 6
       # RDS VDI COLLECTION
       # ==========================================================
 
-      - name: Deploy Native RDS VDI Collection
+      - name: "Deploy Native RDS VDI Collection"
         shell: powershell
         run: |
-          [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
-
           Import-Module RemoteDesktop
 
           $Broker = $env:COMPUTERNAME
@@ -593,10 +520,7 @@ jobs:
 
           Write-Host "Connection Broker: $Broker"
 
-          # ------------------------------------------------------
           # RDS SERVERS
-          # ------------------------------------------------------
-
           Write-Host ""
           Write-Host "Existing RDS deployment:"
 
@@ -607,10 +531,7 @@ jobs:
               Server,
               Roles
 
-          # ------------------------------------------------------
           # COLLECTION
-          # ------------------------------------------------------
-
           Write-Host ""
           Write-Host "Creating VDI collection..."
 
@@ -641,7 +562,7 @@ jobs:
           }
           else {
 
-              Write-Host "[*] VDI-Cloud-Pool уже существует."
+              Write-Host "[*] VDI-Cloud-Pool already exists."
 
           }
 
@@ -658,15 +579,13 @@ jobs:
 
 
       # ==========================================================
-      # ЭТАП 7
+      # STAGE 7
       # RDS WEB ACCESS
       # ==========================================================
 
-      - name: Show RDS Web Access Information
+      - name: "Show RDS Web Access Information"
         shell: powershell
         run: |
-          [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
-
           $Computer = $env:COMPUTERNAME
 
           Write-Host "=========================================="
@@ -678,24 +597,21 @@ jobs:
           Write-Host "https://$Computer/RDWeb"
 
           Write-Host ""
-          Write-Host "Подключение к серверу выполняется"
-          Write-Host "через Tailscale, настроенный win-rdp-enabler."
+          Write-Host "Connection is available through"
+          Write-Host "Tailscale configured by win-rdp-enabler."
 
           Write-Host ""
-          Write-Host "Tailscale status:"
-          Write-Host "(управляется win-rdp-enabler)"
+          Write-Host "Tailscale is managed by win-rdp-enabler."
 
 
       # ==========================================================
-      # ЭТАП 8
+      # STAGE 8
       # KEEP ALIVE
       # ==========================================================
 
-      - name: Start VDI Engine and Keep Alive
+      - name: "Start VDI Engine and Keep Alive"
         shell: powershell
         run: |
-          [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
-
           Import-Module Hyper-V
           Import-Module RemoteDesktop
 
@@ -725,10 +641,7 @@ jobs:
               Write-Host "  VDI STATUS - $(Get-Date)"
               Write-Host "=========================================="
 
-              # --------------------------------------------------
               # HYPER-V
-              # --------------------------------------------------
-
               Write-Host ""
               Write-Host "Hyper-V VMs:"
 
@@ -740,10 +653,7 @@ jobs:
                   MemoryAssigned,
                   Uptime
 
-              # --------------------------------------------------
               # RDS COLLECTIONS
-              # --------------------------------------------------
-
               Write-Host ""
               Write-Host "RDS Collections:"
 
@@ -754,10 +664,7 @@ jobs:
                   CollectionName,
                   CollectionDescription
 
-              # --------------------------------------------------
               # RDS SERVERS
-              # --------------------------------------------------
-
               Write-Host ""
               Write-Host "RDS Servers:"
 
@@ -768,10 +675,7 @@ jobs:
                   Server,
                   Roles
 
-              # --------------------------------------------------
-              # NETWORK
-              # --------------------------------------------------
-
+              # VDI NAT
               Write-Host ""
               Write-Host "VDI NAT:"
 
