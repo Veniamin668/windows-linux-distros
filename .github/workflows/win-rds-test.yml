@@ -6,7 +6,7 @@ on:
       iso_url:
         description: 'Прямая ссылка на ISO Windows Server / Windows 11 для шаблона VDI'
         required: true
-        default: 'https://archive.org'
+        default: ''
         type: string
       wim_index:
         description: 'Индекс редакции для шаблона VDI (1 - Core, 2 - GUI)'
@@ -34,31 +34,31 @@ jobs:
           $WorkDir = "${{ github.workspace }}\vdi_build"
           New-Item -ItemType Directory -Force -Path $WorkDir
           
-          Write-Host "Скачиваем ISO для шаблона на максимальной скорости через curl на диск D:\..."
+          Write-Host "Скачиваем ISO для шаблона на maximal'noy skorosti cherez curl na disk D:\..."
           curl.exe -L -o "$WorkDir\windows.iso" "${{ inputs.iso_url }}"
           
-          Write-Host "Монтируем ISO..."
+          Write-Host "Montiruem ISO..."
           $MountDrive = (Mount-DiskImage -ImagePath "$WorkDir\windows.iso" -PassThru | Get-Volume).DriveLetter
           $WimPath = "$($MountDrive):\sources\install.wim"
           if (-not (Test-Path $WimPath)) { $WimPath = "$($MountDrive):\sources\install.esd" }
           
-          Write-Host "Создаем чистый VHDX диск на диске D:\..."
-          # ЖЕСТКИЙ ФИКС СИНТАКСИСА: Создаем и монтируем в две отдельные строки
+          Write-Host "Sozdaem chistyy VHDX disk na diske D:\..."
+          # Жесткий фикс синтаксиса: Создаем и монтируем в две отдельные строки
           New-VHD -Path "$WorkDir\vdi_template.vhdx" -SizeBytes 60GB -Dynamic
           
-          Write-Host "Монтируем созданный VHDX диск..."
+          Write-Host "Montiruem sozdannyy VHDX disk..."
           $Vhd = Mount-VHD -Path "$WorkDir\vdi_template.vhdx" -Passthru
           
           Initialize-Disk -Number $Vhd.DiskNumber -PartitionStyle GPT
           $Part = New-Partition -DiskNumber $Vhd.DiskNumber -UseMaximumSize -DriveLetter T
           Format-Volume -DriveLetter T -FileSystem NTFS -Confirm:$false
           
-          Write-Host "Распаковываем ОС на диск шаблона..."
+          Write-Host "Raspakovyvaem OS na disk shablona..."
           DISM.exe /Apply-Image /ImageFile:$WimPath /Index:${{ inputs.wim_index }} /ApplyDir:T:\
           bcdboot T:\Windows /s T: /f UEFI
           
           # Инжектируем автозапуск сети в шаблон диска
-          Write-Host "Инжектируем автозапуск сети в шаблон диска..."
+          Write-Host "Inzhektiruem avtozapusk seti v shablon diska..."
           $UserStartup = "T:\ProgramData\Microsoft\Windows\Start Menu\Programs\StartUp"
           New-Item -ItemType Directory -Force -Path $UserStartup
           
@@ -75,35 +75,37 @@ jobs:
           # Размонтируем всё наружу
           Dismount-VHD -Path "$WorkDir\vdi_template.vhdx"
           Dismount-DiskImage -ImagePath "$WorkDir\windows.iso"
-          Write-Host "Шаблон VHDX успешно подготовлен на диске D:\!"
+          Write-Host "Shablon VHDX uspeshno podgotovlen na diske D:\!"
 
       # ==========================================
       # ЭТАП 2: УСТАНОВКА РОЛЕЙ, СМЕНА ПАРОЛЯ, ФИКС РЕЕСТРА И РЕБУТ
       # ==========================================
       - name: "Install Native RDS, Change Password, Patch AutoLogon Registry & Reboot"
         shell: powershell
+        # Безопасно передаем секреты через переменные среды
+        env:
+          SECURE_ADMIN_PASS: ${{ secrets.ADMIN_PASS }}
         run: |
           [Console]::InputEncoding = [System.Text.Encoding]::UTF8
           [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
           
-          Write-Host "1. Устанавливаем службы нативной роли RDS / VDI..."
+          Write-Host "1. Ustanavlivaem sluzhby nativnoy roli RDS / VDI..."
           Import-Module ServerManager
           Install-WindowsFeature Remote-Desktop-Services, RDS-Connection-Broker, RDS-Virtualization-Host -IncludeManagementTools
           
-          Write-Host "2. СМЕНА ПАРОЛЯ В СИСТЕМЕ: Применяем ADMIN_PASS для runneradmin..."
-          $Password = ConvertTo-SecureString "${{ secrets.ADMIN_PASS }}" -AsPlainText -Force
-          Set-LocalUser -Name "runneradmin" -Password $Password
+          Write-Host "2. SMENA PAROLYA V SISTEME: Primenyaem ADMIN_PASS dlya runneradmin..."
+          $SecurePassword = ConvertTo-SecureString $env:SECURE_ADMIN_PASS -AsPlainText -Force
+          Set-LocalUser -Name "runneradmin" -Password $SecurePassword
           
-          Write-Host "3. ПАТЧ АВТОЛОГИНА РЕЕСТРА: Синхронизируем ключи Winlogon..."
+          Write-Host "3. PATCH AVTOLOGINA REESTRA: Sinhroniziruem klyuchi Winlogon..."
           $RegPath = "HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Winlogon"
           Set-ItemProperty -Path $RegPath -Name "AutoAdminLogon" -Value "1"
           Set-ItemProperty -Path $RegPath -Name "DefaultUserName" -Value "runneradmin"
-          Set-ItemProperty -Path $RegPath -Name "DefaultPassword" -Value "${{ secrets.ADMIN_PASS }}"
+          Set-ItemProperty -Path $RegPath -Name "DefaultPassword" -Value $env:SECURE_ADMIN_PASS
           Set-ItemProperty -Path $RegPath -Name "ForceAutoLogon" -Value "1"
           
           Write-Host "=========================================="
-          Write-Host "  ОТПРАВЛЯЕМ ХОСТ В РЕБУТ ДЛЯ АКТИВИЗАЦИИ РОЛЕЙ!"
-          Write-Host "  Пароль изменен, реестр синхронизирован, автологин готов."
+          Write-Host "  OTPRAVLYAEM HOST V REBUT DLYA AKTIVIZACII ROLEY!"
           Write-Host "=========================================="
           
           Restart-Computer -Force
@@ -130,13 +132,13 @@ jobs:
           [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
           
           Write-Host "=========================================="
-          Write-Host "  ВИНДОВЫЙ RDS-VDI СТЕНД ПОЛНОСТЬЮ ПОДНЯТ!"
-          Write-Host "  Подключайтесь к машине через Tailscale!"
-          Write-Host "  Логин RDP: runneradmin"
-          Write-Host "  Пароль RDP: твой секрет ADMIN_PASS"
+          Write-Host "  VINDOVYY專 RDS-VDI STAND POLNOST'YU PODNYAT!"
+          Write-Host "  Podklyuchaytes' k mashine cherez Tailscale!"
+          Write-Host "  Login RDP: runneradmin"
+          Write-Host "  Parol' RDP: tvoy sekret ADMIN_PASS"
           Write-Host "=========================================="
           
           while ($true) {
-              Write-Host "=== Нативный RDS хост активен. Время: $(Get-Date) ==="
+              Write-Host "=== Nativnyy RDS host aktivien. Vremya: $(Get-Date) ==="
               Start-Sleep -Seconds 60
           }
