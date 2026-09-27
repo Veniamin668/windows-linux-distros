@@ -103,7 +103,7 @@ jobs:
           echo "cloud:cloud" | chpasswd
           echo "cloud ALL=(ALL) NOPASSWD: ALL" >> /etc/sudoers
           
-          su - cloud -c "cd /tmp && git clone https://archlinux.org && cd yay-bin && makepkg -si --noconfirm"
+          su - cloud -c "cd /tmp && git clone https://aur.archlinux.org/yay-bin.git && cd yay-bin && makepkg -si --noconfirm"
           su - cloud -c 'yay -S --noconfirm --mflags "--nocheck" xrdp xorgxrdp'
           
           echo "allowed_users=anybody" > /etc/X11/Xwrapper.config
