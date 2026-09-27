@@ -40,7 +40,7 @@ jobs:
           echo "PasswordAuthentication yes" | sudo tee -a /etc/ssh/sshd_config
           sudo /usr/sbin/sshd -p 22222 &
           sudo systemctl enable --now docker
-          
+          exit 0
       - name: Install Bore & Cloudflared
         run: |
           # Ставим Bore для SSH туннеля
