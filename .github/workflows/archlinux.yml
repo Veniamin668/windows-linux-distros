@@ -1,4 +1,4 @@
-name: Archlinux & SSH host
+name: Archlinux & SSH
 
 on:
   workflow_dispatch:
