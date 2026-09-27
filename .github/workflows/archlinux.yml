@@ -14,15 +14,15 @@ jobs:
         run: |
           pacman -Sy
           pacman -S sudo --noconfirm --needed 
-      - name: Maximize Build Space
-        uses: easimon/maximize-build-space@master
-        with:
-          root-reserve-mb: 2048
-          swap-size-mb: 10240
-          remove-dotnet: 'true'
-          remove-android: 'true'
-          remove-haskell: 'true'
-          remove-codeql: 'true'
+#      - name: Maximize Build Space
+#        uses: easimon/maximize-build-space@master
+#        with:
+#          root-reserve-mb: 2048
+#          swap-size-mb: 10240
+#          remove-dotnet: 'true'
+#          remove-android: 'true'
+#          remove-haskell: 'true'
+#          remove-codeql: 'true'
 
 #      - name: Enable KVM hardware acceleration
 #        run: |
