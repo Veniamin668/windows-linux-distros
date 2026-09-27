@@ -16,6 +16,7 @@ jobs:
         run: |
           pacman -Sy
           pacman -S sudo --noconfirm --needed 
+          
 #      - name: Maximize Build Space
 #        uses: easimon/maximize-build-space@master
 #        with:
@@ -44,6 +45,15 @@ jobs:
 #          echo "PasswordAuthentication yes" | sudo tee -a /etc/ssh/sshd_config
 #          sudo /usr/sbin/sshd -p 22222 &
 
+      - name: install tailscale
+        run: |
+          pacman -Sy
+          pacman -S tailscale --noconfirm --needed 
+          mkdir -p /var/run/tailscale /var/lib/tailscale
+          tailscaled --state=/var/lib/tailscale/tailscaled.state > /tmp/tailscale.log 2>&1 &
+          tailscale login
+          cat /tmp/tailscale.log
+          
       - name: Configure and Start Local SSH Server
         run: |
           sudo pacman -Sy
