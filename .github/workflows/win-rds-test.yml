@@ -6,7 +6,7 @@ on:
       iso_url:
         description: 'Direct URL to Windows Server / Windows 11 ISO'
         required: true
-        default: 'https://archive.org'
+        default: ''
         type: string
 
       wim_index:
@@ -219,12 +219,12 @@ jobs:
               Write-Host "[!] Hyper-V is not installed."
               Write-Host "[+] Installing Hyper-V..."
 
-              Install-WindowsFeature `
+              $HyperVResult = Install-WindowsFeature `
                 -Name Hyper-V `
                 -IncludeManagementTools `
                 -Restart:$false
 
-              if ($LASTEXITCODE -ne 0) {
+              if (!$HyperVResult.Success) {
                   throw "Hyper-V installation failed."
               }
 
@@ -248,14 +248,16 @@ jobs:
               Write-Host "[!] Hyper-V PowerShell module is missing."
               Write-Host "[+] Installing Hyper-V PowerShell..."
 
-              Install-WindowsFeature `
+              $HyperVPSResult = Install-WindowsFeature `
                 -Name Hyper-V-PowerShell `
                 -IncludeManagementTools `
                 -Restart:$false
 
-              if ($LASTEXITCODE -ne 0) {
+              if (!$HyperVPSResult.Success) {
                   throw "Hyper-V PowerShell installation failed."
               }
+
+              Write-Host "[+] Hyper-V PowerShell installation completed."
           }
 
           Import-Module Hyper-V -ErrorAction Stop
@@ -278,14 +280,34 @@ jobs:
 
               Write-Host "[+] Installing RDS Virtualization..."
 
-              Install-WindowsFeature `
+              $RDSVirtualizationResult = Install-WindowsFeature `
                 -Name RDS-Virtualization `
                 -IncludeManagementTools `
                 -Restart:$false
 
-              if ($LASTEXITCODE -ne 0) {
+              Write-Host ""
+              Write-Host "RDS Virtualization installation result:"
+              $RDSVirtualizationResult |
+                Format-List `
+                  Success,
+                  RestartNeeded,
+                  ExitCode,
+                  FeatureResult
+
+              if (!$RDSVirtualizationResult.Success) {
                   throw "RDS Virtualization installation failed."
               }
+
+              Write-Host "[+] RDS Virtualization installation completed."
+
+              $RDSVirtualizationCheck = `
+                Get-WindowsFeature -Name RDS-Virtualization
+
+              if (!$RDSVirtualizationCheck.Installed) {
+                  throw "RDS Virtualization installation was reported successful, but the feature is not installed."
+              }
+
+              Write-Host "[+] RDS Virtualization verified."
           }
 
           # ======================================================
@@ -306,14 +328,34 @@ jobs:
 
               Write-Host "[+] Installing RDS Web Access..."
 
-              Install-WindowsFeature `
+              $RDSWebAccessResult = Install-WindowsFeature `
                 -Name RDS-Web-Access `
                 -IncludeManagementTools `
                 -Restart:$false
 
-              if ($LASTEXITCODE -ne 0) {
+              Write-Host ""
+              Write-Host "RDS Web Access installation result:"
+              $RDSWebAccessResult |
+                Format-List `
+                  Success,
+                  RestartNeeded,
+                  ExitCode,
+                  FeatureResult
+
+              if (!$RDSWebAccessResult.Success) {
                   throw "RDS Web Access installation failed."
               }
+
+              Write-Host "[+] RDS Web Access installation completed."
+
+              $RDSWebAccessCheck = `
+                Get-WindowsFeature -Name RDS-Web-Access
+
+              if (!$RDSWebAccessCheck.Installed) {
+                  throw "RDS Web Access installation was reported successful, but the feature is not installed."
+              }
+
+              Write-Host "[+] RDS Web Access verified."
           }
 
           # ======================================================
@@ -367,7 +409,7 @@ jobs:
             -Value "1"
 
           # ======================================================
-          # STATUS
+          # FINAL STATUS
           # ======================================================
 
           Write-Host ""
@@ -472,7 +514,6 @@ jobs:
                 } |
                 Sort-Object ifIndex -Descending |
                 Select-Object -First 1
-
           }
 
           if (!$Adapter) {
@@ -582,7 +623,6 @@ jobs:
                     -Name $VMName `
                     -TurnOff `
                     -Force
-
               }
 
               Remove-VM `
