@@ -1,4 +1,4 @@
-name: Deploy Custom Cloud Desktops (RDS Final Panel)
+name: Deploy Custom Cloud Desktops (RDS Final Panel testing)
 
 on:
   workflow_dispatch:
@@ -24,9 +24,9 @@ on:
         default: 'kde'
         type: choice
         options:
+          - 'gnome'
           - 'kde'
           - 'xfce'
-          - 'gnome'
 
 jobs:
   # ==========================================
@@ -46,7 +46,7 @@ jobs:
           - os_name: 'debian'
             os_image: 'debian:bookworm-slim'
         
-        # Безопасное исключение контейнеров из матрицы на основе инпутов
+        # Исключение контейнеров из матрицы на основе инпутов
         exclude:
           - os_name: 'archlinux'
             ${{ inputs.launch_arch == false && 'os_name' || 'none' }}: 'archlinux'
@@ -173,20 +173,17 @@ jobs:
             DE_START="startxfce4"
           fi
           
-          # Создание пользователя cloud
-          sudo useradd -m -s /bin/bash cloud || true
-          echo "cloud:cloud" | sudo chpasswd
-          echo "cloud ALL=(ALL) NOPASSWD: ALL" | sudo tee -a /etc/sudoers
+          # Задаем пароль 'cloud' для нативного юзера 'runner'
+          echo "runner:cloud" | sudo chpasswd
           
           # Фикс прав для Xorg
           sudo sed -i 's/allowed_users=console/allowed_users=anybody/g' /etc/X11/Xwrapper.config || echo "allowed_users=anybody" | sudo tee /etc/X11/Xwrapper.config
           
-          # Безопасная запись сессии через sudo tee
-          echo "$DE_START" | sudo tee /home/cloud/.xsession
-          sudo chmod +x /home/cloud/.xsession
-          sudo chown cloud:cloud /home/cloud/.xsession
+          # Прописываем старт графической оболочки нативно под runner
+          echo "$DE_START" > ~/.xsession
+          chmod +x ~/.xsession
           
-          # Старт нативного сервиса
+          # Перезапуск нативного сервиса XRDP
           sudo systemctl restart xrdp
           sudo systemctl enable xrdp
 
@@ -194,6 +191,8 @@ jobs:
         run: |
           echo "=========================================="
           echo "  НАТИВНАЯ UBUNTU УСПЕШНО ПОДНЯТА!"
-          echo "  Логин RDP: cloud | Пароль RDP: cloud"
+          echo "  Устройство в Tailscale: desktop-ubuntu"
+          echo "  Логин RDP: runner"
+          echo "  Пароль RDP: cloud"
           echo "=========================================="
           sleep infinity
