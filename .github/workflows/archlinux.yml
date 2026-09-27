@@ -8,7 +8,7 @@ jobs:
     runs-on: ubuntu-latest
     container: 
      image: archlinux:latest
-     options: --device=/dev/kvm
+     options: --device=/dev/kvm --device=/dev/net/tun --cap-add=NET_ADMIN
     timeout-minutes: 360
 
     steps:
