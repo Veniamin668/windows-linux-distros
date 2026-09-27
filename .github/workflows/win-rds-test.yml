@@ -20,7 +20,7 @@ jobs:
 
     steps:
       # ==========================================
-      # ЭТАП 1: СБОРКА ШАБЛОНА VHDX ИЗ ISO ЧЕРЕЗ DISM (НА ХОСТE)
+      # ЭТАП 1: СБОРКА ШАБЛОНА VHDX ИЗ ISO ЧЕРЕЗ DISM (НА ДИСКЕ D:\)
       # ==========================================
       - name: "Generate VDI Template VHDX via DISM"
         shell: powershell
@@ -30,18 +30,25 @@ jobs:
           [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
           $OutputEncoding = [System.Text.Encoding]::UTF8
           
-          New-Item -ItemType Directory -Force -Path "C:\VDI"
+          # Готовим рабочую папку на диске D:\ внутри репозитория (где много места)
+          $WorkDir = "${{ github.workspace }}\vdi_build"
+          New-Item -ItemType Directory -Force -Path $WorkDir
           
-          Write-Host "Скачиваем ISO для шаблона на максимальной скорости через curl..."
-          curl.exe -L -o "C:\VDI\windows.iso" "${{ inputs.iso_url }}"
+          Write-Host "Скачиваем ISO для шаблона на максимальной скорости через curl на диск D:\..."
+          curl.exe -L -o "$WorkDir\windows.iso" "${{ inputs.iso_url }}"
           
           Write-Host "Монтируем ISO..."
-          $MountDrive = (Mount-DiskImage -ImagePath "C:\VDI\windows.iso" -PassThru | Get-Volume).DriveLetter
+          $MountDrive = (Mount-DiskImage -ImagePath "$WorkDir\windows.iso" -PassThru | Get-Volume).DriveLetter
           $WimPath = "$($MountDrive):\sources\install.wim"
           if (-not (Test-Path $WimPath)) { $WimPath = "$($MountDrive):\sources\install.esd" }
           
-          Write-Host "Создаем чистый VHDX диск..."
-          $Vhd = New-VHD -Path "C:\VDI\vdi_template.vhdx" -SizeBytes 60GB -Dynamic -Passthru | Mount-VHD -Passthru
+          Write-Host "Создаем чистый VHDX диск на диске D:\..."
+          # ЖЕСТКИЙ ФИКС СИНТАКСИСА: Создаем и монтируем в две отдельные строки
+          New-VHD -Path "$WorkDir\vdi_template.vhdx" -SizeBytes 60GB -Dynamic
+          
+          Write-Host "Монтируем созданный VHDX диск..."
+          $Vhd = Mount-VHD -Path "$WorkDir\vdi_template.vhdx" -Passthru
+          
           Initialize-Disk -Number $Vhd.DiskNumber -PartitionStyle GPT
           $Part = New-Partition -DiskNumber $Vhd.DiskNumber -UseMaximumSize -DriveLetter T
           Format-Volume -DriveLetter T -FileSystem NTFS -Confirm:$false
@@ -58,7 +65,6 @@ jobs:
           $InternalScript = @"
           Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' -Name "fDenyTSConnections" -Value 0
           Enable-NetFirewallRule -DisplayGroup "Remote Desktop"
-          # Скачиваем Tailscale внутри виртуалки тоже на полной скорости через curl
           curl.exe -L -o "C:\tailscale.msi" "https://tailscale.com"
           Start-Process msiexec.exe -ArgumentList '/i C:\tailscale.msi /qn /norestart' -Wait
           Start-Sleep -Seconds 10
@@ -67,9 +73,9 @@ jobs:
           $InternalScript | Out-File -FilePath "$UserStartup\VDI-Init.ps1" -Encoding ascii
           
           # Размонтируем всё наружу
-          Dismount-VHD -Path "C:\VDI\vdi_template.vhdx"
-          Dismount-DiskImage -ImagePath "C:\VDI\windows.iso"
-          Write-Host "Шаблон VHDX успешно подготовлен!"
+          Dismount-VHD -Path "$WorkDir\vdi_template.vhdx"
+          Dismount-DiskImage -ImagePath "$WorkDir\windows.iso"
+          Write-Host "Шаблон VHDX успешно подготовлен на диске D:\!"
 
       # ==========================================
       # ЭТАП 2: УСТАНОВКА РОЛЕЙ, СМЕНА ПАРОЛЯ, ФИКС РЕЕСТРА И РЕБУТ
