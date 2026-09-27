@@ -6,7 +6,7 @@ on:
       iso_url:
         description: 'Direct URL to Windows Server / Windows 11 ISO'
         required: true
-        default: ''
+        default: 'https://archive.org'
         type: string
 
       wim_index:
@@ -186,10 +186,10 @@ jobs:
 
       # ==========================================================
       # STAGE 2
-      # HYPER-V + RDS + WEB ACCESS + AUTOLOGON
+      # CHECK HYPER-V + INSTALL RDS + AUTOLOGON
       # ==========================================================
 
-      - name: "Install Native Hyper-V and RDS Roles"
+      - name: "Check Hyper-V and Install RDS Roles"
         shell: powershell
         env:
           SECURE_ADMIN_PASS: ${{ secrets.ADMIN_PASS }}
@@ -200,25 +200,128 @@ jobs:
 
           Import-Module ServerManager
 
+          # ======================================================
           # HYPER-V
-          Write-Host "[1] Installing Hyper-V..."
+          # ======================================================
 
-          Install-WindowsFeature `
-            Hyper-V `
-            Hyper-V-PowerShell `
-            -IncludeManagementTools
+          Write-Host ""
+          Write-Host "[1] Checking Hyper-V..."
 
-          # RDS
-          Write-Host "[2] Installing RDS Virtualization and Web Access..."
+          $HyperVFeature = Get-WindowsFeature -Name Hyper-V
 
-          Install-WindowsFeature `
-            Remote-Desktop-Services `
-            RDS-Virtualization `
-            RDS-Web-Access `
-            -IncludeManagementTools
+          if ($HyperVFeature.Installed) {
 
-          # PASSWORD
-          Write-Host "[3] Configuring runneradmin password..."
+              Write-Host "[+] Hyper-V is already installed."
+
+          }
+          else {
+
+              Write-Host "[!] Hyper-V is not installed."
+              Write-Host "[+] Installing Hyper-V..."
+
+              Install-WindowsFeature `
+                -Name Hyper-V `
+                -IncludeManagementTools `
+                -Restart:$false
+
+              if ($LASTEXITCODE -ne 0) {
+                  throw "Hyper-V installation failed."
+              }
+
+              Write-Host "[+] Hyper-V installation completed."
+          }
+
+          # ======================================================
+          # HYPER-V POWERSHELL
+          # ======================================================
+
+          Write-Host ""
+          Write-Host "[2] Checking Hyper-V PowerShell module..."
+
+          if (Get-Module -ListAvailable -Name Hyper-V) {
+
+              Write-Host "[+] Hyper-V PowerShell module is available."
+
+          }
+          else {
+
+              Write-Host "[!] Hyper-V PowerShell module is missing."
+              Write-Host "[+] Installing Hyper-V PowerShell..."
+
+              Install-WindowsFeature `
+                -Name Hyper-V-PowerShell `
+                -IncludeManagementTools `
+                -Restart:$false
+
+              if ($LASTEXITCODE -ne 0) {
+                  throw "Hyper-V PowerShell installation failed."
+              }
+          }
+
+          Import-Module Hyper-V -ErrorAction Stop
+
+          # ======================================================
+          # RDS VIRTUALIZATION
+          # ======================================================
+
+          Write-Host ""
+          Write-Host "[3] Checking RDS Virtualization..."
+
+          $RDSVirtualization = Get-WindowsFeature -Name RDS-Virtualization
+
+          if ($RDSVirtualization.Installed) {
+
+              Write-Host "[+] RDS Virtualization is already installed."
+
+          }
+          else {
+
+              Write-Host "[+] Installing RDS Virtualization..."
+
+              Install-WindowsFeature `
+                -Name RDS-Virtualization `
+                -IncludeManagementTools `
+                -Restart:$false
+
+              if ($LASTEXITCODE -ne 0) {
+                  throw "RDS Virtualization installation failed."
+              }
+          }
+
+          # ======================================================
+          # RDS WEB ACCESS
+          # ======================================================
+
+          Write-Host ""
+          Write-Host "[4] Checking RDS Web Access..."
+
+          $RDSWebAccess = Get-WindowsFeature -Name RDS-Web-Access
+
+          if ($RDSWebAccess.Installed) {
+
+              Write-Host "[+] RDS Web Access is already installed."
+
+          }
+          else {
+
+              Write-Host "[+] Installing RDS Web Access..."
+
+              Install-WindowsFeature `
+                -Name RDS-Web-Access `
+                -IncludeManagementTools `
+                -Restart:$false
+
+              if ($LASTEXITCODE -ne 0) {
+                  throw "RDS Web Access installation failed."
+              }
+          }
+
+          # ======================================================
+          # ADMIN PASSWORD
+          # ======================================================
+
+          Write-Host ""
+          Write-Host "[5] Configuring runneradmin password..."
 
           if ([string]::IsNullOrWhiteSpace($env:SECURE_ADMIN_PASS)) {
               throw "ADMIN_PASS secret is empty."
@@ -233,8 +336,12 @@ jobs:
             -Name "runneradmin" `
             -Password $SecurePassword
 
+          # ======================================================
           # AUTOLOGON
-          Write-Host "[4] Configuring Windows AutoLogon..."
+          # ======================================================
+
+          Write-Host ""
+          Write-Host "[6] Configuring Windows AutoLogon..."
 
           $RegPath = `
             "HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Winlogon"
@@ -259,9 +366,32 @@ jobs:
             -Name "ForceAutoLogon" `
             -Value "1"
 
+          # ======================================================
+          # STATUS
+          # ======================================================
+
           Write-Host ""
           Write-Host "=========================================="
-          Write-Host "  ROLE INSTALLATION COMPLETE"
+          Write-Host "  ROLE STATUS"
+          Write-Host "=========================================="
+
+          Get-WindowsFeature |
+            Where-Object {
+              $_.Name -in @(
+                "Hyper-V",
+                "Hyper-V-PowerShell",
+                "RDS-Virtualization",
+                "RDS-Web-Access"
+              )
+            } |
+            Format-Table `
+              Name,
+              DisplayName,
+              Installed
+
+          Write-Host ""
+          Write-Host "=========================================="
+          Write-Host "  ROLE CONFIGURATION COMPLETE"
           Write-Host "  REBOOTING HOST"
           Write-Host "=========================================="
 
@@ -272,8 +402,7 @@ jobs:
       # STAGE 3
       # YOUR WIN-RDP-ENABLER
       #
-      # NO TAILSCALE INSTALLATION HERE
-      # NO RDP FIREWALL RULES HERE
+      # TAILSCALE AND RDP FIREWALL ARE HANDLED THERE
       # ==========================================================
 
       - name: "Run Win RDP Enabler (Post-Reboot Connect)"
@@ -297,6 +426,8 @@ jobs:
           Write-Host "=========================================="
           Write-Host "  CONFIGURING VDI NETWORK"
           Write-Host "=========================================="
+
+          Import-Module Hyper-V
 
           $SwitchName = "VDI-NAT"
           $GatewayIP = "192.168.250.1"
@@ -421,6 +552,10 @@ jobs:
           $WorkDir = "${{ github.workspace }}\vdi_build"
           $VhdPath = "$WorkDir\vdi_template.vhdx"
           $VMPath = "$WorkDir\VMs"
+
+          if (!(Test-Path $VhdPath)) {
+              throw "Master VHDX was not found: $VhdPath"
+          }
 
           New-Item `
             -ItemType Directory `
