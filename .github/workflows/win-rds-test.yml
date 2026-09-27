@@ -1,0 +1,124 @@
+name: Deploy Windows Native VDI (RDS Collection + Native Reboot Method)
+
+on:
+  workflow_dispatch:
+    inputs:
+      iso_url:
+        description: 'Прямая ссылка на ISO Windows Server / Windows 11 для шаблона VDI'
+        required: true
+        default: 'https://archive.org'
+        type: string
+      wim_index:
+        description: 'Индекс редакции для шаблона VDI (1 - Core, 2 - GUI)'
+        required: true
+        default: '2'
+
+jobs:
+  deploy-vdi-native:
+    runs-on: windows-latest
+    timeout-minutes: 360
+
+    steps:
+      # ==========================================
+      # ЭТАП 1: СБОРКА ШАБЛОНА VHDX ИЗ ISO ЧЕРЕЗ DISM (НА ХОСТE)
+      # ==========================================
+      - name: "Generate VDI Template VHDX via DISM"
+        shell: powershell
+        run: |
+          New-Item -ItemType Directory -Force -Path "C:\VDI"
+          
+          Write-Host "Скачиваем ISO для шаблона..."
+          Invoke-WebRequest -Uri "${{ inputs.iso_url }}" -OutFile "C:\VDI\windows.iso" -UserAgent "Mozilla/5.0"
+          
+          Write-Host "Монтируем ISO..."
+          $MountDrive = (Mount-DiskImage -ImagePath "C:\VDI\windows.iso" -PassThru | Get-Volume).DriveLetter
+          $WimPath = "$($MountDrive):\sources\install.wim"
+          if (-not (Test-Path $WimPath)) { $WimPath = "$($MountDrive):\sources\install.esd" }
+          
+          Write-Host "Создаем чистый VHDX диск..."
+          $Vhd = New-VHD -Path "C:\VDI\vdi_template.vhdx" -SizeBytes 60GB -Dynamic -Passthru | Mount-VHD -Passthru
+          Initialize-Disk -Number $Vhd.DiskNumber -PartitionStyle GPT
+          $Part = New-Partition -DiskNumber $Vhd.DiskNumber -UseMaximumSize -DriveLetter T
+          Format-Volume -DriveLetter T -FileSystem NTFS -Confirm:$false
+          
+          Write-Host "Распаковываем ОС на диск шаблона..."
+          DISM.exe /Apply-Image /ImageFile:$WimPath /Index:${{ inputs.wim_index }} /ApplyDir:T:\
+          bcdboot T:\Windows /s T: /f UEFI
+          
+          # Инжектируем автозапуск сети в шаблон диска
+          Write-Host "Инжектируем автозапуск сети в шаблон диска..."
+          $UserStartup = "T:\ProgramData\Microsoft\Windows\Start Menu\Programs\StartUp"
+          New-Item -ItemType Directory -Force -Path $UserStartup
+          
+          $InternalScript = @"
+          Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' -Name "fDenyTSConnections" -Value 0
+          Enable-NetFirewallRule -DisplayGroup "Remote Desktop"
+          Invoke-WebRequest -Uri "https://tailscale.com" -OutFile "C:\tailscale.msi"
+          Start-Process msiexec.exe -ArgumentList '/i C:\tailscale.msi /qn /norestart' -Wait
+          Start-Sleep -Seconds 10
+          & "C:\Program Files\Tailscale\tailscale.exe" up --authkey="${{ secrets.TAIL_KEY }}" --hostname="win-vdi-desktop"
+          "@
+          $InternalScript | Out-File -FilePath "$UserStartup\VDI-Init.ps1" -Encoding ascii
+          
+          # Размонтируем всё наружу
+          Dismount-VHD -Path "C:\VDI\vdi_template.vhdx"
+          Dismount-DiskImage -ImagePath "C:\VDI\windows.iso"
+          Write-Host "Шаблон VHDX успешно подготовлен!"
+
+      # ==========================================
+      # ЭТАП 2: УСТАНОВКА РОЛЕЙ, СМЕНА ПАРОЛЯ, ФИКС РЕЕСТРА И РЕБУТ
+      # ==========================================
+      - name: "Install Native RDS, Change Password, Patch AutoLogon Registry & Reboot"
+        shell: powershell
+        run: |
+          Write-Host "1. Устанавливаем службы нативной роли RDS / VDI..."
+          Import-Module ServerManager
+          Install-WindowsFeature Remote-Desktop-Services, RDS-Connection-Broker, RDS-Virtualization-Host -IncludeManagementTools
+          
+          Write-Host "2. СМЕНА ПАРОЛЯ В СИСТЕМЕ: Применяем ADMIN_PASS для runneradmin..."
+          $Password = ConvertTo-SecureString "${{ secrets.ADMIN_PASS }}" -AsPlainText -Force
+          Set-LocalUser -Name "runneradmin" -Password $Password
+          
+          Write-Host "3. ПАТЧ АВТОЛОГИНА РЕЕСТРА: Синхронизируем ключи Winlogon..."
+          $RegPath = "HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Winlogon"
+          Set-ItemProperty -Path $RegPath -Name "AutoAdminLogon" -Value "1"
+          Set-ItemProperty -Path $RegPath -Name "DefaultUserName" -Value "runneradmin"
+          Set-ItemProperty -Path $RegPath -Name "DefaultPassword" -Value "${{ secrets.ADMIN_PASS }}"
+          Set-ItemProperty -Path $RegPath -Name "ForceAutoLogon" -Value "1"
+          
+          Write-Host "=========================================="
+          Write-Host "  ОТПРАВЛЯЕМ ХОСТ В РЕБУТ ДЛЯ АКТИВИЗАЦИИ РОЛЕЙ!"
+          Write-Host "  Пароль изменен, реестр синхронизирован, автологин готов."
+          Write-Host "=========================================="
+          
+          Restart-Computer -Force
+
+      # ==========================================
+      # ЭТАП 3: ЗАПУСКАЕМ ТВОЙ ЭКШЕН (СТАРТ ПОСЛЕ ПЕРЕЗАГРУЗКИ)
+      # ==========================================
+      - name: Run Win RDP Enabler (Post-Reboot Connect)
+        uses: Veniamin668/win-rdp-enabler@main
+        env:
+          TAIL_KEY: ${{ secrets.TAIL_KEY }}
+          ADMIN_PASS: ${{ secrets.ADMIN_PASS }}
+          USE_CUSTOM_USER: 'false'
+          CUSTOM_USERNAME: ''
+          CUSTOM_PASSWORD: ${{ secrets.CUSTOM_PASSWORD }}
+
+      # ==========================================
+      # ЭТАП 4: УДЕРЖАНИЕ СЕССИИ И ВЫВОД БАННЕРА
+      # ==========================================
+      - name: "Start VDI Engine and Keep Alive"
+        shell: powershell
+        run: |
+          Write-Host "=========================================="
+          Write-Host "  ВИНДОВЫЙ RDS-VDI СТЕНД ПОЛНОСТЬЮ ПОДНЯТ!"
+          Write-Host "  Подключайтесь к машине через Tailscale!"
+          Write-Host "  Логин RDP: runneradmin"
+          Write-Host "  Пароль RDP: твой секрет ADMIN_PASS"
+          Write-Host "=========================================="
+          
+          while ($true) {
+              Write-Host "=== Нативный RDS хост активен. Время: $(Get-Date) ==="
+              Start-Sleep -Seconds 60
+          }
