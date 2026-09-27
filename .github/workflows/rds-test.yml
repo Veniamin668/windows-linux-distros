@@ -1,4 +1,4 @@
-name: Deploy Custom Cloud Desktops (RDS Native & Container Panel)
+name: Deploy Custom Cloud Desktops (RDS Final Panel)
 
 on:
   workflow_dispatch:
@@ -29,51 +29,38 @@ on:
           - 'gnome'
 
 jobs:
-  deploy-desktop:
+  # ==========================================
+  # ДЖОБА 1: ДЛЯ СИСТЕМ В КОНТЕЙНЕРАХ (ARCH / DEBIAN)
+  # ==========================================
+  deploy-containers:
     runs-on: ubuntu-latest
     timeout-minutes: 360
-
+    
     strategy:
       fail-fast: false
       matrix:
-        os_name: [ 'archlinux', 'ubuntu', 'debian' ]
+        os_name: [ 'archlinux', 'debian' ]
         include:
           - os_name: 'archlinux'
             os_image: 'archlinux:latest'
-            is_native: false
           - os_name: 'debian'
             os_image: 'debian:bookworm-slim'
-            is_native: false
-          - os_name: 'ubuntu'
-            os_image: 'none'
-            is_native: true
-
-    # ГЛОБАЛЬНЫЙ IF ОТСЮДА ПОЛНОСТЬЮ УДАЛЕН, ЧТОБЫ ВАЛИДАТОР НЕ РУГАЛСЯ
+        
+        # Безопасное исключение контейнеров из матрицы на основе инпутов
+        exclude:
+          - os_name: 'archlinux'
+            ${{ inputs.launch_arch == false && 'os_name' || 'none' }}: 'archlinux'
+          - os_name: 'debian'
+            ${{ inputs.launch_debian == false && 'os_name' || 'none' }}: 'debian'
 
     container:
       image: ${{ matrix.os_image }}
-      options: ${{ matrix.is_native == false && '--privileged --device=/dev/kvm --device=/dev/net/tun --cap-add=NET_ADMIN' || '' }}
+      options: --privileged --device=/dev/kvm --device=/dev/net/tun --cap-add=NET_ADMIN
 
     steps:
-      # ==========================================
-      # ЭТАП 0: ПРОВЕРКА ГАЛОЧКИ ПОЛЬЗОВАТЕЛЯ
-      # ==========================================
-      - name: "Check if this OS should be launched"
-        id: check_os
-        run: |
-          LAUNCH=false
-          if [ "${{ matrix.os_name }}" = "archlinux" ] && [ "${{ inputs.launch_arch }}" = "true" ]; then LAUNCH=true; fi
-          if [ "${{ matrix.os_name }}" = "ubuntu" ] && [ "${{ inputs.launch_ubuntu }}" = "true" ]; then LAUNCH=true; fi
-          if [ "${{ matrix.os_name }}" = "debian" ] && [ "${{ inputs.launch_debian }}" = "true" ]; then LAUNCH=true; fi
-          
-          echo "should_launch=$LAUNCH" >> $GITHUB_OUTPUT
-
-      # ==========================================
-      # ЭТАП 1: УСТАНОВКА И ПОДКЛЮЧЕНИЕ TAILSCALE
-      # ==========================================
-      
+      # --- СТАРТ СЕТИ ДЛЯ КОНТЕЙНЕРОВ ---
       - name: "Arch Install and Start Tailscale"
-        if: steps.check_os.outputs.should_launch == 'true' && matrix.os_name == 'archlinux'
+        if: matrix.os_name == 'archlinux'
         run: |
           pacman -Syu --noconfirm tailscale curl
           mkdir -p /var/run/tailscale /var/lib/tailscale
@@ -82,7 +69,7 @@ jobs:
           tailscale up --authkey="${{ secrets.TAIL_KEY }}" --hostname="desktop-arch"
 
       - name: "Debian Install and Start Tailscale"
-        if: steps.check_os.outputs.should_launch == 'true' && matrix.os_name == 'debian'
+        if: matrix.os_name == 'debian'
         run: |
           apt-get update && apt-get install -y tailscale curl
           mkdir -p /var/run/tailscale /var/lib/tailscale
@@ -90,18 +77,9 @@ jobs:
           sleep 3
           tailscale up --authkey="${{ secrets.TAIL_KEY }}" --hostname="desktop-debian"
 
-      - name: "Ubuntu-Native Connect to Tailscale"
-        if: steps.check_os.outputs.should_launch == 'true' && matrix.os_name == 'ubuntu'
-        uses: tailscale/github-action@v4
-        with:
-          authkey: ${{ secrets.TAIL_KEY }}
-          hostname: desktop-ubuntu
-
-      # ==========================================
-      # ЭТАП 2: СБОРКА ARCH LINUX (КОНТЕЙНЕР)
-      # ==========================================
+      # --- НАСТРОЙКА ГРАФИКИ ДЛЯ КОНТЕЙНЕРОВ ---
       - name: "Setup Arch Linux Desktop"
-        if: steps.check_os.outputs.should_launch == 'true' && matrix.os_name == 'archlinux'
+        if: matrix.os_name == 'archlinux'
         run: |
           pacman -S --noconfirm base-devel git sudo dbus xorg-server xorg-apps nano
           if [ "${{ inputs.desktop_env }}" = "kde" ]; then
@@ -125,11 +103,8 @@ jobs:
           echo "$DE_START" > /home/cloud/.xinitrc
           chmod +x /home/cloud/.xinitrc && chown cloud:cloud /home/cloud/.xinitrc
 
-      # ==========================================
-      # ЭТАП 3: СБОРКА DEBIAN (КОНТЕЙНЕР)
-      # ==========================================
       - name: "Setup Debian Desktop"
-        if: steps.check_os.outputs.should_launch == 'true' && matrix.os_name == 'debian'
+        if: matrix.os_name == 'debian'
         env:
           DEBIAN_FRONTEND: noninteractive
         run: |
@@ -151,11 +126,36 @@ jobs:
           echo -e "$DE_START" > /home/cloud/.xsession
           chown cloud:cloud /home/cloud/.xsession
 
-      # ==========================================
-      # ЭТАП 4: НАСТРОЙКА НАТИВНОЙ UBUNTU (ХОСТ)
-      # ==========================================
+      # --- ЗАПУСК СЕРВИСОВ И ОЖИДАНИЕ ДЛЯ КОНТЕЙНЕРОВ ---
+      - name: "Start Container Services and Keep Alive"
+        run: |
+          mkdir -p /run/dbus /var/run/xrdp
+          dbus-daemon --system --fork 2>/dev/null || true
+          xrdp-keygen xrdp /etc/xrdp/rsakeys.ini
+          xrdp-sesman --ns &
+          xrdp &
+          echo "=========================================="
+          echo "  КОНТЕЙНЕР [${{ matrix.os_name }}] ПОДНЯТ!"
+          echo "  Логин RDP: cloud | Пароль RDP: cloud"
+          echo "=========================================="
+          sleep infinity
+
+  # ==========================================
+  # ДЖОБА 2: ДЛЯ НАТИВНОГО ХОСТА (UBUNTU)
+  # ==========================================
+  deploy-native-ubuntu:
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+    if: inputs.launch_ubuntu == true
+
+    steps:
+      - name: "Ubuntu-Native Connect to Tailscale"
+        uses: tailscale/github-action@v4
+        with:
+          authkey: ${{ secrets.TAIL_KEY }}
+          hostname: desktop-ubuntu
+
       - name: "Setup Native Ubuntu Desktop"
-        if: steps.check_os.outputs.should_launch == 'true' && matrix.os_name == 'ubuntu'
         env:
           DEBIAN_FRONTEND: noninteractive
         run: |
@@ -185,23 +185,10 @@ jobs:
           sudo systemctl restart xrdp
           sudo systemctl enable xrdp
 
-      # ==========================================
-      # ЭТАП 5: ЕДИНЫЙ ЗАПУСК И ОЖИДАНИЕ
-      # ==========================================
-      - name: "Start Services and Keep Alive"
-        if: steps.check_os.outputs.should_launch == 'true'
+      - name: "Start Ubuntu Services and Keep Alive"
         run: |
-          if [ "${{ matrix.is_native }}" = "false" ]; then
-            mkdir -p /run/dbus /var/run/xrdp
-            dbus-daemon --system --fork 2>/dev/null || true
-            xrdp-keygen xrdp /etc/xrdp/rsakeys.ini
-            xrdp-sesman --ns &
-            xrdp &
-          fi
-          
           echo "=========================================="
-          echo "  СТЕНД ДЛЯ [${{ matrix.os_name }}] УСПЕШНО ПОДНЯТ!"
+          echo "  НАТИВНАЯ UBUNTU УСПЕШНО ПОДНЯТА!"
           echo "  Логин RDP: cloud | Пароль RDP: cloud"
           echo "=========================================="
-          
           sleep infinity
