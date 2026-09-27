@@ -428,44 +428,6 @@ jobs:
 
 
       # ============================================================
-      # 11. INSTALL HYPER-V
-      # ============================================================
-      - name: Install Hyper-V
-        shell: powershell
-        run: |
-          Write-Host ""
-          Write-Host "============================================================"
-          Write-Host "                  INSTALL HYPER-V"
-          Write-Host "============================================================"
-
-          $feature = Get-WindowsOptionalFeature `
-              -Online `
-              -FeatureName Microsoft-Hyper-V-All
-
-          if ($feature.State -eq "Enabled") {
-
-              Write-Host "[+] Hyper-V already enabled"
-
-          }
-          else {
-
-              Write-Host "[*] Enabling Hyper-V..."
-
-              Enable-WindowsOptionalFeature `
-                  -Online `
-                  -FeatureName Microsoft-Hyper-V-All `
-                  -All `
-                  -NoRestart
-
-              if ($LASTEXITCODE -ne 0) {
-                  throw "Failed to enable Hyper-V"
-              }
-
-              Write-Host "[+] Hyper-V enabled"
-          }
-
-
-      # ============================================================
       # 12. INSTALL RDS VIRTUALIZATION
       # ============================================================
       - name: Install RDS Virtualization
