@@ -32,109 +32,31 @@ jobs:
           $iso = "$env:RUNNER_TEMP\windows.iso"
           $url = "${{ inputs.iso_url }}"
 
-          $stdoutLog = "$env:RUNNER_TEMP\curl.out"
-          $stderrLog = "$env:RUNNER_TEMP\curl.err"
-
           Write-Host ""
           Write-Host "============================================================"
           Write-Host "              WINDOWS ISO DOWNLOAD"
           Write-Host "============================================================"
           Write-Host ""
 
-          foreach ($file in @($iso, $stdoutLog, $stderrLog)) {
-              if (Test-Path $file) {
-                  Remove-Item $file -Force -ErrorAction SilentlyContinue
-              }
+          if (Test-Path $iso) {
+              Remove-Item $iso -Force
           }
 
-          Write-Host "[*] Checking remote file size..."
-
-          $headers = curl.exe -s -L -I "$url" 2>$null
-
-          $contentLength = $null
-
-          foreach ($line in ($headers -split "`r?`n")) {
-              if ($line -match '(?i)^content-length:\s*(\d+)') {
-                  $contentLength = [int64]$Matches[1]
-              }
-          }
-
-          if ($contentLength) {
-              $totalGB = $contentLength / 1GB
-              Write-Host "[+] Remote size: $($totalGB.ToString('N2')) GB"
-          }
-          else {
-              Write-Host "[!] Could not determine remote file size"
-          }
-
-          Write-Host "[*] Starting download..."
+          Write-Host "[*] Downloading Windows ISO..."
+          Write-Host "[*] curl output is shown directly below."
           Write-Host ""
 
-          $curlArgs = @(
-              "-L"
-              "--fail"
-              "--retry", "5"
-              "--retry-delay", "5"
-              "--retry-all-errors"
-              "-C", "-"
-              "-o", $iso
-              $url
-          )
+          curl.exe `
+              -L `
+              --fail `
+              --retry 5 `
+              --retry-delay 5 `
+              --retry-all-errors `
+              -C - `
+              -o "$iso" `
+              "$url"
 
-          $process = Start-Process `
-              -FilePath "curl.exe" `
-              -ArgumentList $curlArgs `
-              -NoNewWindow `
-              -PassThru `
-              -RedirectStandardOutput $stdoutLog `
-              -RedirectStandardError $stderrLog
-
-          while (-not $process.HasExited) {
-
-              if (Test-Path $iso) {
-
-                  $downloaded = (Get-Item $iso).Length
-                  $downloadedGB = $downloaded / 1GB
-
-                  if ($contentLength) {
-
-                      $percent = ($downloaded / $contentLength) * 100
-
-                      if ($percent -gt 100) {
-                          $percent = 100
-                      }
-
-                      $remaining = $contentLength - $downloaded
-
-                      if ($remaining -lt 0) {
-                          $remaining = 0
-                      }
-
-                      $remainingGB = $remaining / 1GB
-
-                      Write-Host -NoNewline "`rDownloaded: $($downloadedGB.ToString('N2')) / $($totalGB.ToString('N2')) GB  |  $($percent.ToString('N1'))%  |  Remaining: $($remainingGB.ToString('N2')) GB    "
-                  }
-                  else {
-
-                      Write-Host -NoNewline "`rDownloaded: $($downloadedGB.ToString('N2')) GB    "
-                  }
-              }
-
-              Start-Sleep -Seconds 2
-          }
-
-          $process.WaitForExit()
-
-          $exitCode = $process.ExitCode
-
-          $downloaded = if (Test-Path $iso) {
-              (Get-Item $iso).Length
-          }
-          else {
-              0
-          }
-
-          $downloadedGB = $downloaded / 1GB
+          $exitCode = $LASTEXITCODE
 
           Write-Host ""
           Write-Host ""
@@ -142,25 +64,8 @@ jobs:
           Write-Host "                  DOWNLOAD RESULT"
           Write-Host "============================================================"
           Write-Host "[*] curl exit code: $exitCode"
-          Write-Host "[*] Downloaded:     $($downloadedGB.ToString('N2')) GB"
 
           if ($exitCode -ne 0) {
-
-              Write-Host ""
-              Write-Host "========== CURL ERROR =========="
-
-              if (Test-Path $stderrLog) {
-
-                  $errorText = Get-Content $stderrLog -ErrorAction SilentlyContinue
-
-                  if ($errorText) {
-                      $errorText | Select-Object -Last 50
-                  }
-                  else {
-                      Write-Host "[!] curl.err is empty"
-                  }
-              }
-
               throw "curl failed with exit code $exitCode"
           }
 
@@ -168,22 +73,11 @@ jobs:
               throw "ISO file was not created"
           }
 
-          if ($contentLength) {
-
-              if ($downloaded -lt $contentLength) {
-
-                  Write-Host ""
-                  Write-Host "[!] Download is smaller than expected"
-                  Write-Host "[!] Expected: $contentLength bytes"
-                  Write-Host "[!] Actual:   $downloaded bytes"
-
-                  throw "Download incomplete"
-              }
-
-              Write-Host "[+] File size matches remote Content-Length"
-          }
+          $size = (Get-Item $iso).Length
+          $sizeGB = $size / 1GB
 
           Write-Host "[+] Download completed successfully"
+          Write-Host "[+] ISO size: $($sizeGB.ToString('N2')) GB"
           Write-Host "[+] ISO: $iso"
 
           "ISO_PATH=$iso" >> $env:GITHUB_ENV
@@ -205,6 +99,8 @@ jobs:
           if (-not (Test-Path $iso)) {
               throw "Windows ISO not found: $iso"
           }
+
+          Write-Host "[*] Mounting ISO..."
 
           $image = Mount-DiskImage `
               -ImagePath $iso `
@@ -245,15 +141,23 @@ jobs:
           $esd = Join-Path $drive "sources\install.esd"
 
           if (Test-Path $wim) {
+
               $imageFile = $wim
+
               Write-Host "[+] Found install.wim"
+
           }
           elseif (Test-Path $esd) {
+
               $imageFile = $esd
+
               Write-Host "[+] Found install.esd"
+
           }
           else {
+
               throw "Neither install.wim nor install.esd was found"
+
           }
 
           Write-Host "[+] Image: $imageFile"
@@ -323,22 +227,26 @@ jobs:
 
           $vhdx = "$env:VHDX_PATH"
 
+          Write-Host "[*] Mounting VHDX..."
+
           $disk = Mount-VHD `
               -Path $vhdx `
               -Passthru
 
           Start-Sleep -Seconds 2
 
+          Write-Host "[*] Initializing GPT..."
+
           Initialize-Disk `
               -Number $disk.Number `
               -PartitionStyle GPT `
               -ErrorAction Stop
 
-          Write-Host "[+] Disk initialized as GPT"
-
           # --------------------------------------------------------
           # EFI SYSTEM PARTITION
           # --------------------------------------------------------
+          Write-Host "[*] Creating EFI partition..."
+
           $efiPartition = New-Partition `
               -DiskNumber $disk.Number `
               -Size 100MB `
@@ -351,11 +259,11 @@ jobs:
               -Confirm:$false |
               Out-Null
 
-          Write-Host "[+] EFI partition created"
-
           # --------------------------------------------------------
           # WINDOWS PARTITION
           # --------------------------------------------------------
+          Write-Host "[*] Creating Windows partition..."
+
           $windowsPartition = New-Partition `
               -DiskNumber $disk.Number `
               -UseMaximumSize `
@@ -368,10 +276,11 @@ jobs:
               -Confirm:$false |
               Out-Null
 
-          Write-Host "[+] Windows partition created"
-
           $windowsLetter = "$($windowsPartition.DriveLetter):"
 
+          # --------------------------------------------------------
+          # EFI DRIVE LETTER
+          # --------------------------------------------------------
           $systemPartition = Get-Partition `
               -DiskNumber $disk.Number |
               Where-Object {
@@ -391,6 +300,8 @@ jobs:
 
           $systemLetter = "$($systemVolume.DriveLetter):"
 
+          Write-Host ""
+          Write-Host "[+] Disk number:        $($disk.Number)"
           Write-Host "[+] Windows partition: $windowsLetter"
           Write-Host "[+] EFI partition:     $systemLetter"
 
@@ -434,7 +345,7 @@ jobs:
 
 
       # ============================================================
-      # 8. INSTALL BOOTLOADER
+      # 8. INSTALL WINDOWS BOOTLOADER
       # ============================================================
       - name: Install Windows Bootloader
         shell: powershell
@@ -512,6 +423,7 @@ jobs:
           else {
 
               Write-Host "[+] Master VHDX already offline"
+
           }
 
 
@@ -569,7 +481,11 @@ jobs:
               -IncludeManagementTools
 
           $result |
-              Select-Object Success, RestartNeeded, ExitCode, FeatureResult |
+              Select-Object `
+                  Success,
+                  RestartNeeded,
+                  ExitCode,
+                  FeatureResult |
               Format-List
 
           if (-not $result.Success) {
@@ -597,7 +513,11 @@ jobs:
               -IncludeManagementTools
 
           $result |
-              Select-Object Success, RestartNeeded, ExitCode, FeatureResult |
+              Select-Object `
+                  Success,
+                  RestartNeeded,
+                  ExitCode,
+                  FeatureResult |
               Format-List
 
           if (-not $result.Success) {
@@ -623,7 +543,10 @@ jobs:
           Get-WindowsFeature `
               RDS-Virtualization,
               RDS-Web-Access |
-              Select-Object Name, DisplayName, InstallState |
+              Select-Object `
+                  Name,
+                  DisplayName,
+                  InstallState |
               Format-Table -AutoSize
 
           Write-Host ""
@@ -631,7 +554,7 @@ jobs:
 
 
       # ============================================================
-      # 15. CREATE VDI NAT SWITCH
+      # 15. CREATE VDI NAT NETWORK
       # ============================================================
       - name: Configure VDI NAT Network
         shell: powershell
@@ -667,6 +590,7 @@ jobs:
           else {
 
               Write-Host "[+] Internal switch already exists"
+
           }
 
           # --------------------------------------------------------
@@ -717,6 +641,7 @@ jobs:
           else {
 
               Write-Host "[+] Gateway already configured"
+
           }
 
           # --------------------------------------------------------
@@ -741,6 +666,7 @@ jobs:
           else {
 
               Write-Host "[+] NAT already exists"
+
           }
 
           Write-Host ""
@@ -770,7 +696,7 @@ jobs:
           }
 
           # --------------------------------------------------------
-          # Check whether VM already exists
+          # Check existing VM
           # --------------------------------------------------------
           $existing = Get-VM `
               -Name $vmName `
@@ -797,10 +723,11 @@ jobs:
                   Out-Null
 
               Write-Host "[+] Template VM created"
+
           }
 
           # --------------------------------------------------------
-          # Configure template VM
+          # Template VM must NEVER auto-start
           # --------------------------------------------------------
           Set-VM `
               -Name $vmName `
@@ -809,7 +736,7 @@ jobs:
 
           # --------------------------------------------------------
           # IMPORTANT:
-          # Do NOT start the master/template VM.
+          # The template VM is intentionally NOT started.
           # --------------------------------------------------------
           $vm = Get-VM -Name $vmName
 
@@ -823,6 +750,7 @@ jobs:
                   -Force
 
               Start-Sleep -Seconds 2
+
           }
 
           $vm = Get-VM -Name $vmName
@@ -955,4 +883,4 @@ jobs:
           while ($true) {
               Write-Host "[$(Get-Date -Format 'HH:mm:ss')] VDI runner alive..."
               Start-Sleep -Seconds 60
-          }
+          }5
