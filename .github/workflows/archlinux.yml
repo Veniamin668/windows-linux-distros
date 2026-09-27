@@ -52,7 +52,6 @@ jobs:
           mkdir -p /var/run/tailscale /var/lib/tailscale
           tailscaled --state=/var/lib/tailscale/tailscaled.state > /tmp/tailscale.log 2>&1 &
           tailscale login
-          cat /tmp/tailscale.log
           
       - name: Configure and Start Local SSH Server
         run: |
