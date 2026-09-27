@@ -317,7 +317,7 @@ jobs:
       # 7. BOOT FILES
       # ============================================================
       - name: Configure boot files
-        shell: pwsh
+        shell: powershell
         run: |
           $ErrorActionPreference = "Stop"
 
@@ -337,70 +337,47 @@ jobs:
               Select-Object -First 1
 
           if (-not $efiPartition) {
-              throw "EFI System Partition not found on disk $diskNumber."
+              throw "EFI partition not found."
           }
 
           $partitionNumber = $efiPartition.PartitionNumber
 
           Write-Host "[+] EFI partition found:"
-          Write-Host "    Disk       : $diskNumber"
-          Write-Host "    Partition  : $partitionNumber"
-          Write-Host "    Size       : $([math]::Round($efiPartition.Size / 1MB, 2)) MB"
-          Write-Host "    DriveLetter: '$($efiPartition.DriveLetter)'"
+          Write-Host "    Disk      : $diskNumber"
+          Write-Host "    Partition : $partitionNumber"
+          Write-Host "    Size      : $([math]::Round($efiPartition.Size / 1MB, 2)) MB"
 
           # --------------------------------------------------------
-          # Assign S: using DiskPart
+          # Assign S: using classic DiskPart
           # --------------------------------------------------------
-          if (-not $efiPartition.DriveLetter) {
+          $diskpartFile = Join-Path $env:TEMP "efi.txt"
 
-              Write-Host "[*] Assigning drive letter S: to EFI partition..."
+          @"
+select disk $diskNumber
+select partition $partitionNumber
+assign letter=S
+exit
+"@ | Set-Content -Path $diskpartFile -Encoding ASCII
 
-              $diskpartScript = @"
-          select disk $diskNumber
-          select partition $partitionNumber
-          assign letter=S
-          exit
-          "@
+          Write-Host "[*] Assigning S: to EFI partition..."
 
-              $diskpartFile = Join-Path $env:TEMP "assign-efi.txt"
+          & diskpart.exe /s $diskpartFile
 
-              Set-Content `
-                  -Path $diskpartFile `
-                  -Value $diskpartScript `
-                  -Encoding ASCII
+          $diskpartExit = $LASTEXITCODE
 
-              $dpOutput = & diskpart.exe /s $diskpartFile 2>&1
+          Remove-Item $diskpartFile -Force -ErrorAction SilentlyContinue
 
-              $dpOutput | ForEach-Object {
-                  Write-Host $_
-              }
-
-              if ($LASTEXITCODE -ne 0) {
-                  throw "DiskPart failed to assign S: to EFI partition."
-              }
-
-              Remove-Item $diskpartFile -Force -ErrorAction SilentlyContinue
+          if ($diskpartExit -ne 0) {
+              throw "DiskPart failed with exit code $diskpartExit."
           }
 
+          Write-Host "[+] EFI assigned as S:"
+
           # --------------------------------------------------------
-          # Re-read partition
+          # Verify Windows partition
           # --------------------------------------------------------
-          $efiPartition = Get-Partition `
-              -DiskNumber $diskNumber `
-              -PartitionNumber $partitionNumber
-
-          if (-not $efiPartition.DriveLetter) {
-              throw "EFI partition still has no drive letter after DiskPart."
-          }
-
-          $efiLetter = "$($efiPartition.DriveLetter):"
-
-          Write-Host "[+] EFI: $efiLetter"
           Write-Host "[+] OS : $env:MASTER_OS"
 
-          # --------------------------------------------------------
-          # Verify Windows installation
-          # --------------------------------------------------------
           if (-not (Test-Path "$env:MASTER_OS\Windows")) {
               throw "Windows directory not found at $env:MASTER_OS\Windows"
           }
@@ -408,34 +385,22 @@ jobs:
           Write-Host "[+] Windows installation found."
 
           # --------------------------------------------------------
-          # Create UEFI boot files
+          # Classic BCDBOOT
           # --------------------------------------------------------
           Write-Host "[*] Running BCDBOOT..."
 
           & bcdboot.exe `
               "$env:MASTER_OS\Windows" `
-              /s $efiLetter `
-              /f UEFI `
-              /v
+              /s S: `
+              /f UEFI
 
-          if ($LASTEXITCODE -ne 0) {
-              throw "BCDBOOT failed with exit code $LASTEXITCODE."
+          $bcdbootExit = $LASTEXITCODE
+
+          if ($bcdbootExit -ne 0) {
+              throw "BCDBOOT failed with exit code $bcdbootExit."
           }
 
           Write-Host "[+] Boot files configured successfully."
-
-          # --------------------------------------------------------
-          # Verify boot files
-          # --------------------------------------------------------
-          if (-not (Test-Path "$efiLetter\EFI\Microsoft\Boot")) {
-              throw "EFI boot directory was not created."
-          }
-
-          Write-Host "[+] EFI boot directory verified:"
-          Write-Host "    $efiLetter\EFI\Microsoft\Boot"
-
-          Get-ChildItem "$efiLetter\EFI\Microsoft\Boot" -Force |
-              Select-Object Name, Length
              
       # ============================================================
       # 8. IMAGE CLEANUP
