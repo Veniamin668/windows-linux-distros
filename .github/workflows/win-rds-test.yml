@@ -1,4 +1,4 @@
-name: Deploy Windows Native VDI
+name: Deploy Windows Native VDI testing
 
 on:
   workflow_dispatch:
@@ -200,22 +200,16 @@ jobs:
 
           Import-Module ServerManager
 
-          # ======================================================
           # HYPER-V
-          # ======================================================
-
           Write-Host ""
           Write-Host "[1] Checking Hyper-V..."
 
           $HyperVFeature = Get-WindowsFeature -Name Hyper-V
 
           if ($HyperVFeature.Installed) {
-
               Write-Host "[+] Hyper-V is already installed."
-
           }
           else {
-
               Write-Host "[!] Hyper-V is not installed."
               Write-Host "[+] Installing Hyper-V..."
 
@@ -231,20 +225,14 @@ jobs:
               Write-Host "[+] Hyper-V installation completed."
           }
 
-          # ======================================================
           # HYPER-V POWERSHELL
-          # ======================================================
-
           Write-Host ""
           Write-Host "[2] Checking Hyper-V PowerShell module..."
 
           if (Get-Module -ListAvailable -Name Hyper-V) {
-
               Write-Host "[+] Hyper-V PowerShell module is available."
-
           }
           else {
-
               Write-Host "[!] Hyper-V PowerShell module is missing."
               Write-Host "[+] Installing Hyper-V PowerShell..."
 
@@ -262,22 +250,16 @@ jobs:
 
           Import-Module Hyper-V -ErrorAction Stop
 
-          # ======================================================
           # RDS VIRTUALIZATION
-          # ======================================================
-
           Write-Host ""
           Write-Host "[3] Checking RDS Virtualization..."
 
           $RDSVirtualization = Get-WindowsFeature -Name RDS-Virtualization
 
           if ($RDSVirtualization.Installed) {
-
               Write-Host "[+] RDS Virtualization is already installed."
-
           }
           else {
-
               Write-Host "[+] Installing RDS Virtualization..."
 
               $RDSVirtualizationResult = Install-WindowsFeature `
@@ -287,6 +269,7 @@ jobs:
 
               Write-Host ""
               Write-Host "RDS Virtualization installation result:"
+
               $RDSVirtualizationResult |
                 Format-List `
                   Success,
@@ -310,22 +293,16 @@ jobs:
               Write-Host "[+] RDS Virtualization verified."
           }
 
-          # ======================================================
           # RDS WEB ACCESS
-          # ======================================================
-
           Write-Host ""
           Write-Host "[4] Checking RDS Web Access..."
 
           $RDSWebAccess = Get-WindowsFeature -Name RDS-Web-Access
 
           if ($RDSWebAccess.Installed) {
-
               Write-Host "[+] RDS Web Access is already installed."
-
           }
           else {
-
               Write-Host "[+] Installing RDS Web Access..."
 
               $RDSWebAccessResult = Install-WindowsFeature `
@@ -335,6 +312,7 @@ jobs:
 
               Write-Host ""
               Write-Host "RDS Web Access installation result:"
+
               $RDSWebAccessResult |
                 Format-List `
                   Success,
@@ -358,10 +336,7 @@ jobs:
               Write-Host "[+] RDS Web Access verified."
           }
 
-          # ======================================================
           # ADMIN PASSWORD
-          # ======================================================
-
           Write-Host ""
           Write-Host "[5] Configuring runneradmin password..."
 
@@ -378,10 +353,7 @@ jobs:
             -Name "runneradmin" `
             -Password $SecurePassword
 
-          # ======================================================
           # AUTOLOGON
-          # ======================================================
-
           Write-Host ""
           Write-Host "[6] Configuring Windows AutoLogon..."
 
@@ -408,29 +380,7 @@ jobs:
             -Name "ForceAutoLogon" `
             -Value "1"
 
-          # ======================================================
-          # FINAL STATUS
-          # ======================================================
-
-          Write-Host ""
-          Write-Host "=========================================="
-          Write-Host "  ROLE STATUS"
-          Write-Host "=========================================="
-
-          Get-WindowsFeature |
-            Where-Object {
-              $_.Name -in @(
-                "Hyper-V",
-                "Hyper-V-PowerShell",
-                "RDS-Virtualization",
-                "RDS-Web-Access"
-              )
-            } |
-            Format-Table `
-              Name,
-              DisplayName,
-              Installed
-
+          # REBOOT
           Write-Host ""
           Write-Host "=========================================="
           Write-Host "  ROLE CONFIGURATION COMPLETE"
@@ -476,30 +426,24 @@ jobs:
           $Prefix = "192.168.250.0/24"
           $NatName = "VDI-NAT"
 
-          # CREATE INTERNAL SWITCH
           $ExistingSwitch = `
             Get-VMSwitch `
               -Name $SwitchName `
               -ErrorAction SilentlyContinue
 
           if (!$ExistingSwitch) {
-
               Write-Host "[+] Creating Hyper-V Internal Switch..."
 
               New-VMSwitch `
                 -Name $SwitchName `
                 -SwitchType Internal | Out-Null
-
           }
           else {
-
               Write-Host "[*] VDI-NAT switch already exists."
-
           }
 
           Start-Sleep -Seconds 2
 
-          # FIND HYPER-V VIRTUAL ETHERNET ADAPTER
           $Adapter = Get-NetAdapter |
             Where-Object {
                 $_.Name -like "*$SwitchName*"
@@ -507,7 +451,6 @@ jobs:
             Select-Object -First 1
 
           if (!$Adapter) {
-
               $Adapter = Get-NetAdapter |
                 Where-Object {
                     $_.InterfaceDescription -like "*Hyper-V Virtual Ethernet Adapter*"
@@ -522,7 +465,6 @@ jobs:
 
           Write-Host "[+] Adapter: $($Adapter.Name)"
 
-          # CONFIGURE GATEWAY IP
           $ExistingIP = Get-NetIPAddress `
             -InterfaceIndex $Adapter.ifIndex `
             -AddressFamily IPv4 `
@@ -532,7 +474,6 @@ jobs:
             }
 
           if (!$ExistingIP) {
-
               Write-Host "[+] Assigning gateway $GatewayIP..."
 
               New-NetIPAddress `
@@ -540,34 +481,26 @@ jobs:
                 -IPAddress $GatewayIP `
                 -PrefixLength 24 `
                 -ErrorAction Stop | Out-Null
-
           }
           else {
-
               Write-Host "[*] Gateway already configured."
-
           }
 
-          # CREATE NAT
           $ExistingNat = `
             Get-NetNat `
               -Name $NatName `
               -ErrorAction SilentlyContinue
 
           if (!$ExistingNat) {
-
               Write-Host "[+] Creating NAT $Prefix..."
 
               New-NetNat `
                 -Name $NatName `
                 -InternalIPInterfaceAddressPrefix $Prefix |
                 Out-Null
-
           }
           else {
-
               Write-Host "[*] NAT already exists."
-
           }
 
           Write-Host ""
@@ -607,18 +540,15 @@ jobs:
           Write-Host "  CREATING MASTER VM"
           Write-Host "=========================================="
 
-          # REMOVE OLD MASTER
           $ExistingVM = `
             Get-VM `
               -Name $VMName `
               -ErrorAction SilentlyContinue
 
           if ($ExistingVM) {
-
               Write-Host "[*] Existing Master VM found."
 
               if ($ExistingVM.State -ne "Off") {
-
                   Stop-VM `
                     -Name $VMName `
                     -TurnOff `
@@ -630,7 +560,6 @@ jobs:
                 -Force
           }
 
-          # CREATE MASTER
           New-VM `
             -Name $VMName `
             -Generation 2 `
@@ -639,18 +568,15 @@ jobs:
             -Path $VMPath `
             -SwitchName "VDI-NAT"
 
-          # CPU
           Set-VMProcessor `
             -VMName $VMName `
             -Count 4
 
-          # NETWORK
           Get-VMNetworkAdapter `
             -VMName $VMName |
             Set-VMNetworkAdapter `
               -SwitchName "VDI-NAT"
 
-          # SECURE BOOT
           Set-VMFirmware `
             -VMName $VMName `
             -EnableSecureBoot On `
@@ -695,7 +621,6 @@ jobs:
 
           Write-Host "Connection Broker: $Broker"
 
-          # RDS SERVERS
           Write-Host ""
           Write-Host "Existing RDS deployment:"
 
@@ -706,7 +631,6 @@ jobs:
               Server,
               Roles
 
-          # COLLECTION
           Write-Host ""
           Write-Host "Creating VDI collection..."
 
@@ -719,7 +643,6 @@ jobs:
             }
 
           if (!$ExistingCollection) {
-
               New-RDVirtualDesktopCollection `
                 -ConnectionBroker $Broker `
                 -CollectionName "VDI-Cloud-Pool" `
@@ -733,12 +656,9 @@ jobs:
                 -VirtualDesktopPasswordAge 31 `
                 -Path $DiskPath `
                 -Confirm:$false
-
           }
           else {
-
               Write-Host "[*] VDI-Cloud-Pool already exists."
-
           }
 
           Write-Host ""
@@ -810,13 +730,11 @@ jobs:
           Write-Host "https://$Broker/RDWeb"
 
           while ($true) {
-
               Write-Host ""
               Write-Host "=========================================="
               Write-Host "  VDI STATUS - $(Get-Date)"
               Write-Host "=========================================="
 
-              # HYPER-V
               Write-Host ""
               Write-Host "Hyper-V VMs:"
 
@@ -828,7 +746,6 @@ jobs:
                   MemoryAssigned,
                   Uptime
 
-              # RDS COLLECTIONS
               Write-Host ""
               Write-Host "RDS Collections:"
 
@@ -839,7 +756,6 @@ jobs:
                   CollectionName,
                   CollectionDescription
 
-              # RDS SERVERS
               Write-Host ""
               Write-Host "RDS Servers:"
 
@@ -850,7 +766,6 @@ jobs:
                   Server,
                   Roles
 
-              # VDI NAT
               Write-Host ""
               Write-Host "VDI NAT:"
 
