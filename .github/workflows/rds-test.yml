@@ -151,7 +151,7 @@ jobs:
           
           xrdp-keygen xrdp /etc/xrdp/rsakeys.ini
           xrdp-sesman --ns
-          xrdp
+          xrdp &
           
           echo "=========================================="
           echo "  СТЕНД ДЛЯ [${{ matrix.os_name }}] ГОТОВ!"
