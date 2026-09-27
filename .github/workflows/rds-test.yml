@@ -159,5 +159,4 @@ jobs:
           echo "  Логин RDP: cloud"
           echo "  Пароль RDP: cloud"
           echo "=========================================="
-          
-          sleep infinity
+          tail -f /var/log/xrdp.log /var/log/xrdp-sesman.log 2>/dev/null || sleep infinity
