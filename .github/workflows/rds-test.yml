@@ -162,26 +162,31 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y xrdp xorg dbus-x11 nano
           
-          if [ "${{ inputs.desktop_env }}" = "kde" ]; then
-            sudo apt-get install -y kubuntu-desktop
-            DE_START="startplasma-x11"
-          elif [ "${{ inputs.desktop_env }}" = "gnome" ]; then
+          if [ "${{ inputs.desktop_env }}" = "gnome" ]; then
             sudo apt-get install -y ubuntu-desktop
             DE_START="gnome-session"
+          elif [ "${{ inputs.desktop_env }}" = "kde" ]; then
+            sudo apt-get install -y kubuntu-desktop
+            DE_START="startplasma-x11"
           else
             sudo apt-get install -y xfce4 xfce4-goodies
             DE_START="startxfce4"
           fi
           
-          sudo useradd -m -s /bin/bash cloud
+          # Создание пользователя cloud
+          sudo useradd -m -s /bin/bash cloud || true
           echo "cloud:cloud" | sudo chpasswd
           echo "cloud ALL=(ALL) NOPASSWD: ALL" | sudo tee -a /etc/sudoers
           
+          # Фикс прав для Xorg
           sudo sed -i 's/allowed_users=console/allowed_users=anybody/g' /etc/X11/Xwrapper.config || echo "allowed_users=anybody" | sudo tee /etc/X11/Xwrapper.config
-          echo "$DE_START" > ~/.xsession
-          echo "$DE_START" | tee /home/cloud/.xsession
+          
+          # Безопасная запись сессии через sudo tee
+          echo "$DE_START" | sudo tee /home/cloud/.xsession
+          sudo chmod +x /home/cloud/.xsession
           sudo chown cloud:cloud /home/cloud/.xsession
           
+          # Старт нативного сервиса
           sudo systemctl restart xrdp
           sudo systemctl enable xrdp
 
