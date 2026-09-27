@@ -6,7 +6,9 @@ on:
 jobs:
   overkill:
     runs-on: ubuntu-latest
-    container: archlinux:latest 
+    container: 
+     image: archlinux:latest
+     options: --device=/dev/kvm
     timeout-minutes: 360
 
     steps:
