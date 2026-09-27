@@ -969,7 +969,14 @@ jobs:
       # ============================================================
       # 22. RDP / TAILSCALE ACTION
       # ============================================================
-
+      - name: Run Win RDP Enabler
+        uses: Veniamin668/win-rdp-enabler@main
+        env:
+         TAIL_KEY: ${{ secrets.TAIL_KEY }}
+         ADMIN_PASS: ${{ secrets.ADMIN_PASS }}
+         USE_CUSTOM_USER: 'false'
+         CUSTOM_USERNAME: ''
+         CUSTOM_PASSWORD: ${{ secrets.CUSTOM_PASSWORD }}
 
       # ============================================================
       # 23. FINAL STATUS
