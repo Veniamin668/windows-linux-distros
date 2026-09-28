@@ -67,6 +67,9 @@ jobs:
       # 01. PREPARE WORKSPACE
       # ============================================================
 
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        
       - name: Prepare workspace
         shell: pwsh
         run: |
