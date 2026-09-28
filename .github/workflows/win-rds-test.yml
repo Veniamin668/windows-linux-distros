@@ -606,50 +606,102 @@ jobs:
 
           Write-Host "========== OUTER HYPER-V NETWORK =========="
 
-          if (-not (
-              Get-VMSwitch `
-                  -Name $env:SERVER_SWITCH `
-                  -ErrorAction SilentlyContinue
-          )) {
+          # ------------------------------------------------------------
+          # Hyper-V switch
+          # ------------------------------------------------------------
+
+          $switch = Get-VMSwitch `
+              -Name $env:SERVER_SWITCH `
+              -ErrorAction SilentlyContinue
+
+          if ($switch) {
+
+              Write-Host "[+] Hyper-V switch '$env:SERVER_SWITCH' already exists — skipping creation."
+
+          }
+          else {
+
+              Write-Host "[*] Creating Hyper-V switch '$env:SERVER_SWITCH'..."
 
               New-VMSwitch `
                   -Name $env:SERVER_SWITCH `
                   -SwitchType Internal |
                   Out-Null
+
+              Write-Host "[+] Hyper-V switch created."
           }
+
+          # ------------------------------------------------------------
+          # vEthernet adapter
+          # ------------------------------------------------------------
 
           $adapter = Get-NetAdapter `
               -Name "vEthernet ($env:SERVER_SWITCH)" `
               -ErrorAction Stop
 
-          if (-not (
-              Get-NetIPAddress `
-                  -InterfaceIndex $adapter.ifIndex `
-                  -IPAddress $env:SERVER_GATEWAY `
-                  -ErrorAction SilentlyContinue
-          )) {
+          Write-Host "[+] Adapter found: $($adapter.Name)"
+
+          # ------------------------------------------------------------
+          # Gateway IP
+          # ------------------------------------------------------------
+
+          $gatewayIP = Get-NetIPAddress `
+              -InterfaceIndex $adapter.ifIndex `
+              -IPAddress $env:SERVER_GATEWAY `
+              -ErrorAction SilentlyContinue
+
+          if ($gatewayIP) {
+
+              Write-Host "[+] Gateway IP $env:SERVER_GATEWAY already exists — skipping."
+
+          }
+          else {
+
+              Write-Host "[*] Assigning gateway IP $env:SERVER_GATEWAY..."
 
               New-NetIPAddress `
                   -InterfaceIndex $adapter.ifIndex `
                   -IPAddress $env:SERVER_GATEWAY `
                   -PrefixLength 24 |
                   Out-Null
+
+              Write-Host "[+] Gateway IP configured."
           }
 
-          if (-not (
-              Get-NetNat `
-                  -Name $env:SERVER_SWITCH `
-                  -ErrorAction SilentlyContinue
-          )) {
+          # ------------------------------------------------------------
+          # NAT
+          # ------------------------------------------------------------
+
+          $existingNat = Get-NetNat `
+              -Name $env:SERVER_SWITCH `
+              -ErrorAction SilentlyContinue
+
+          if ($existingNat) {
+
+              Write-Host "[+] NAT '$env:SERVER_SWITCH' already exists — skipping creation."
+
+              $existingNat |
+                  Select-Object `
+                      Name,
+                      InternalIPInterfaceAddressPrefix,
+                      Active |
+                  Format-Table -AutoSize
+
+          }
+          else {
+
+              Write-Host "[*] Creating NAT '$env:SERVER_SWITCH'..."
 
               New-NetNat `
                   -Name $env:SERVER_SWITCH `
-                  -InternalIPInterfaceAddressPrefix `
-                  $env:SERVER_PREFIX
+                  -InternalIPInterfaceAddressPrefix $env:SERVER_PREFIX `
+                  -ErrorAction Stop
+
+              Write-Host "[+] NAT created."
           }
 
+          Write-Host ""
           Write-Host "[+] SERVER-NAT ready."
-
 
       # ============================================================
       # CREATE SERVER-DC01
