@@ -25,18 +25,6 @@ on:
         default: "4"
         type: string
 
-      ad_domain:
-        description: "AD DNS domain"
-        required: true
-        default: "vdi.test"
-        type: string
-
-      ad_netbios:
-        description: "AD NetBIOS name"
-        required: true
-        default: "VDI"
-        type: string
-
 jobs:
   deploy-vdi:
     runs-on: windows-latest
