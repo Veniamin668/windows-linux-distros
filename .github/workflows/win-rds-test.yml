@@ -509,7 +509,7 @@ jobs:
       # 12. HYPER-V NETWORK
       # ============================================================
       - name: Configure Hyper-V VDI network
-        shell: pwsh
+        shell: powershell
         run: |
           $ErrorActionPreference = "Stop"
 
@@ -518,44 +518,77 @@ jobs:
           Write-Host "============================================================"
 
           $switchName = "VDI-NAT"
-          $gatewayIp = "192.168.250.1"
-          $prefix = 24
-          $natName = "VDI-NAT"
+          $gatewayIp  = "192.168.250.1"
+          $prefix     = 24
+          $natName    = "VDI-NAT"
+          $natPrefix  = "192.168.250.0/24"
 
-          $switch = Get-VMSwitch -Name $switchName -ErrorAction SilentlyContinue
+          # --------------------------------------------------------
+          # Hyper-V internal switch
+          # --------------------------------------------------------
+          $switch = Get-VMSwitch `
+              -Name $switchName `
+              -ErrorAction SilentlyContinue
 
           if (-not $switch) {
+
               Write-Host "[+] Creating internal switch..."
 
               New-VMSwitch `
                   -Name $switchName `
-                  -SwitchType Internal |
+                  -SwitchType Internal `
+                  -ErrorAction Stop |
                   Out-Null
+
+              Write-Host "[+] Internal switch created."
           }
           else {
-              Write-Host "[*] VDI-NAT already exists."
+              Write-Host "[*] VDI-NAT switch already exists."
           }
 
+          # --------------------------------------------------------
+          # Find vEthernet adapter
+          # --------------------------------------------------------
           $adapter = Get-NetAdapter |
               Where-Object {
-                  $_.Name -like "*$switchName*"
+                  $_.Name -eq "vEthernet ($switchName)"
               } |
               Select-Object -First 1
 
           if (-not $adapter) {
-              throw "Could not find Hyper-V internal switch adapter."
+              throw "Could not find Hyper-V adapter: vEthernet ($switchName)"
           }
 
-          $existingIp = Get-NetIPAddress `
+          Write-Host "[+] Adapter: $($adapter.Name)"
+
+          # --------------------------------------------------------
+          # Configure gateway
+          # --------------------------------------------------------
+          $gatewayExists = Get-NetIPAddress `
               -InterfaceIndex $adapter.ifIndex `
               -AddressFamily IPv4 `
-              -ErrorAction SilentlyContinue
+              -ErrorAction SilentlyContinue |
+              Where-Object {
+                  $_.IPAddress -eq $gatewayIp
+              }
 
-          if (-not ($existingIp | Where-Object IPAddress -eq $gatewayIp)) {
+          if ($gatewayExists) {
 
-              if ($existingIp) {
-                  $existingIp |
-                      Remove-NetIPAddress `
+              Write-Host "[+] Gateway already configured: $gatewayIp"
+
+          }
+          else {
+
+              Write-Host "[*] Configuring gateway: $gatewayIp/$prefix"
+
+              $wrongAddresses = Get-NetIPAddress `
+                  -InterfaceIndex $adapter.ifIndex `
+                  -AddressFamily IPv4 `
+                  -ErrorAction SilentlyContinue
+
+              foreach ($address in $wrongAddresses) {
+                  Remove-NetIPAddress `
+                      -InputObject $address `
                       -Confirm:$false `
                       -ErrorAction SilentlyContinue
               }
@@ -563,33 +596,82 @@ jobs:
               New-NetIPAddress `
                   -IPAddress $gatewayIp `
                   -PrefixLength $prefix `
-                  -InterfaceIndex $adapter.ifIndex |
+                  -InterfaceIndex $adapter.ifIndex `
+                  -ErrorAction Stop |
                   Out-Null
+
+              Write-Host "[+] Gateway configured."
           }
 
+          # --------------------------------------------------------
+          # NAT
+          # --------------------------------------------------------
           $nat = Get-NetNat `
-              -Name $natName `
-              -ErrorAction SilentlyContinue
+              -ErrorAction SilentlyContinue |
+              Where-Object {
+                  $_.Name -eq $natName
+              } |
+              Select-Object -First 1
 
-          if (-not $nat) {
+          if ($nat) {
+
+              Write-Host "[+] NAT already exists: $natName"
+              Write-Host "    Prefix: $($nat.InternalIPInterfaceAddressPrefix)"
+
+              if ($nat.InternalIPInterfaceAddressPrefix -ne $natPrefix) {
+                  throw "Existing NAT '$natName' has unexpected prefix: $($nat.InternalIPInterfaceAddressPrefix)"
+              }
+
+          }
+          else {
+
+              Write-Host "[+] Creating NAT: $natName"
+
               New-NetNat `
                   -Name $natName `
-                  -InternalIPInterfaceAddressPrefix "192.168.250.0/24" |
+                  -InternalIPInterfaceAddressPrefix $natPrefix `
+                  -ErrorAction Stop |
                   Out-Null
+
+              Write-Host "[+] NAT created."
           }
 
-          Write-Host "[+] Switch : $switchName"
-          Write-Host "[+] Gateway: $gatewayIp"
-          Write-Host "[+] NAT    : 192.168.250.0/24"
-
-          Write-Host ""
-          Get-VMSwitch -Name $switchName
-          Get-NetNat -Name $natName
-
+          # --------------------------------------------------------
+          # Export environment variable
+          # --------------------------------------------------------
           "VDI_SWITCH=$switchName" | Out-File `
               -FilePath $env:GITHUB_ENV `
               -Append `
               -Encoding utf8
+
+          # --------------------------------------------------------
+          # Final state
+          # --------------------------------------------------------
+          Write-Host ""
+          Write-Host "============================================================"
+          Write-Host "                 VDI NETWORK READY"
+          Write-Host "============================================================"
+
+          Write-Host "[+] Switch : $switchName"
+          Write-Host "[+] Adapter: $($adapter.Name)"
+          Write-Host "[+] Gateway: $gatewayIp"
+          Write-Host "[+] NAT    : $natName"
+          Write-Host "[+] Prefix : $natPrefix"
+
+          Write-Host ""
+          Get-VMSwitch -Name $switchName
+
+          Write-Host ""
+          Get-NetIPAddress `
+              -InterfaceIndex $adapter.ifIndex `
+              -AddressFamily IPv4 |
+              Select-Object IPAddress, PrefixLength, InterfaceIndex
+
+          Write-Host ""
+          Get-NetNat |
+              Where-Object Name -eq $natName |
+              Select-Object Name, InternalIPInterfaceAddressPrefix
+
 
       # ============================================================
       # 13. MASTER TEMPLATE VM
