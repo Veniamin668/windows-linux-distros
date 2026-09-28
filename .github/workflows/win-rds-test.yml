@@ -741,7 +741,7 @@ jobs:
       # 14. CREATE RDS DEPLOYMENT
       # ============================================================
       - name: Create RDS deployment
-        shell: pwsh
+        shell: powershell
         run: |
           $ErrorActionPreference = "Stop"
 
@@ -751,25 +751,58 @@ jobs:
 
           $computer = $env:COMPUTERNAME
 
-          Write-Host "[+] Connection Broker: $computer"
-          Write-Host "[+] Web Access       : $computer"
-          Write-Host "[+] Virtualization   : $computer"
+          Write-Host "[+] ComputerName: $computer"
 
+          # --------------------------------------------------------
+          # Get DNS/FQDN information
+          # --------------------------------------------------------
+          $computerSystem = Get-CimInstance Win32_ComputerSystem
+
+          Write-Host "[+] DNSHostName : $($computerSystem.DNSHostName)"
+          Write-Host "[+] Domain      : $($computerSystem.Domain)"
+          Write-Host "[+] PartOfDomain: $($computerSystem.PartOfDomain)"
+
+          $fqdn = $null
+
+          try {
+              $fqdn = [System.Net.Dns]::GetHostEntry($computer).HostName
+          }
+          catch {
+              Write-Host "[!] DNS lookup failed."
+          }
+
+          if (-not $fqdn) {
+              throw "Could not determine a valid FQDN for $computer."
+          }
+
+          Write-Host "[+] FQDN        : $fqdn"
+
+          # --------------------------------------------------------
+          # Check existing deployment
+          # --------------------------------------------------------
           $deployment = Get-RDServer `
               -ErrorAction SilentlyContinue
 
           if ($deployment) {
+
               Write-Host "[*] Existing RDS deployment detected."
+
               $deployment |
                   Format-Table Server,Roles -AutoSize
           }
           else {
+
               Write-Host "[+] Creating new RDS VDI deployment..."
 
+              Write-Host "[+] Connection Broker: $fqdn"
+              Write-Host "[+] Web Access       : $fqdn"
+              Write-Host "[+] Virtualization   : $fqdn"
+
               New-RDVirtualDesktopDeployment `
-                  -ConnectionBroker $computer `
-                  -WebAccessServer $computer `
-                  -VirtualizationHost $computer
+                  -ConnectionBroker $fqdn `
+                  -WebAccessServer $fqdn `
+                  -VirtualizationHost $fqdn `
+                  -ErrorAction Stop
 
               Write-Host "[+] RDS deployment created."
           }
