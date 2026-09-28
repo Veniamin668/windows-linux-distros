@@ -3,384 +3,324 @@ name: Deploy Windows Native VDI
 on:
   workflow_dispatch:
     inputs:
-      iso_url:
-        description: "Direct URL to Windows ISO"
-        required: true
-        type: string
 
-      server_iso:
-        description: "Direct URL to Windows Server ISO"
+      iso_url:
+        description: "Direct Windows ISO URL"
         required: true
         type: string
 
       wim_index:
-        description: "Windows image index inside install.wim/install.esd"
+        description: "Windows image index"
         required: true
-        default: "6"
+        default: "1"
+        type: string
+
+      server_iso_url:
+        description: "Direct Windows Server ISO URL for SERVER-DC01"
+        required: true
         type: string
 
       server_wim_index:
-        description: "Windows Server image index inside install.wim/install.esd"
+        description: "Windows Server image index"
         required: true
         default: "4"
         type: string
 
+      ad_domain:
+        description: "AD DS forest/domain name"
+        required: true
+        default: "vdi.test"
+        type: string
+
+      ad_netbios:
+        description: "AD NetBIOS name"
+        required: true
+        default: "VDI"
+        type: string
+
 jobs:
+
   deploy-vdi:
+
     runs-on: windows-latest
     timeout-minutes: 360
+
+    env:
+      WORK_DIR: ${{ github.workspace }}
+
+      WINDOWS_ISO_URL: ${{ inputs.iso_url }}
+      WINDOWS_WIM_INDEX: ${{ inputs.wim_index }}
+
+      SERVER_ISO_URL: ${{ inputs.server_iso_url }}
+      SERVER_WIM_INDEX: ${{ inputs.server_wim_index }}
+
+      AD_DOMAIN: ${{ inputs.ad_domain }}
+      AD_NETBIOS: ${{ inputs.ad_netbios }}
+
+      SERVER_ADMIN_PASSWORD: ${{ secrets.SERVER_ADMIN_PASSWORD }}
 
     steps:
 
       # ============================================================
-      # 1. PATHS
+      # 1. PREPARE WORKSPACE
       # ============================================================
+
       - name: Prepare workspace
-        shell: pwsh
+        shell: powershell
         run: |
           $ErrorActionPreference = "Stop"
 
-          $WorkDir = $env:GITHUB_WORKSPACE
-
           Write-Host "============================================================"
-          Write-Host "                 PREPARE WORKSPACE"
+          Write-Host "                  PREPARE WORKSPACE"
           Write-Host "============================================================"
 
-          Write-Host "[+] GITHUB_WORKSPACE:"
-          Write-Host "    $WorkDir"
+          New-Item `
+            -ItemType Directory `
+            -Path $env:WORK_DIR `
+            -Force | Out-Null
 
-          if (-not (Test-Path $WorkDir)) {
-              throw "GITHUB_WORKSPACE does not exist: $WorkDir"
-          }
+          Write-Host "[+] Workspace:"
+          Write-Host $env:WORK_DIR
 
-          $iso       = Join-Path $WorkDir "windows.iso"
-          $serverIso = Join-Path $WorkDir "server.iso"
-          $vhdx      = Join-Path $WorkDir "Windows-VDI-Master.vhdx"
-          $serverVhdx = Join-Path $WorkDir "Server-DC01.vhdx"
-
-          Write-Host "[+] VDI ISO:"
-          Write-Host "    $iso"
-
-          Write-Host "[+] Server ISO:"
-          Write-Host "    $serverIso"
-
-          Write-Host "[+] VDI VHDX:"
-          Write-Host "    $vhdx"
-
-          Write-Host "[+] Server VHDX:"
-          Write-Host "    $serverVhdx"
 
       # ============================================================
       # 2. DOWNLOAD WINDOWS ISO
       # ============================================================
+
       - name: Download Windows ISO
-        shell: pwsh
-        env:
-          ISO_URL: ${{ inputs.iso_url }}
+        shell: powershell
         run: |
           $ErrorActionPreference = "Stop"
 
-          $iso = Join-Path $env:GITHUB_WORKSPACE "windows.iso"
-          $url = $env:ISO_URL
-
           Write-Host "============================================================"
-          Write-Host "                    DOWNLOAD WINDOWS ISO"
+          Write-Host "                   DOWNLOAD WINDOWS ISO"
           Write-Host "============================================================"
 
-          if ([string]::IsNullOrWhiteSpace($url)) {
-              throw "ISO URL is empty."
+          $iso = Join-Path `
+            $env:WORK_DIR `
+            "windows.iso"
+
+          if (Test-Path $iso) {
+              Remove-Item $iso -Force
           }
 
-          curl.exe `
-              -L `
-              --fail `
-              --retry 5 `
-              --retry-delay 5 `
-              --retry-all-errors `
-              -C - `
-              -o "$iso" `
-              "$url"
+          & curl.exe `
+            -L `
+            --fail `
+            --retry 5 `
+            --retry-delay 5 `
+            --retry-all-errors `
+            -C - `
+            -o $iso `
+            $env:WINDOWS_ISO_URL
 
           if ($LASTEXITCODE -ne 0) {
-              throw "curl failed with exit code $LASTEXITCODE"
+              throw "Windows ISO download failed."
           }
 
           if (-not (Test-Path $iso)) {
-              throw "Windows ISO was not downloaded."
+              throw "Windows ISO was not created."
           }
-
-          $size = (Get-Item $iso).Length
 
           Write-Host "[+] Windows ISO downloaded."
-          Write-Host "[+] Size: $([math]::Round($size / 1GB, 2)) GB"
+
+          "WINDOWS_ISO=$iso" >> $env:GITHUB_ENV
+
 
       # ============================================================
-      # 3. DOWNLOAD WINDOWS SERVER ISO
+      # 3. MOUNT WINDOWS ISO
       # ============================================================
-      - name: Download Windows Server ISO
-        shell: pwsh
-        env:
-          SERVER_ISO_URL: ${{ inputs.server_iso }}
-        run: |
-          $ErrorActionPreference = "Stop"
 
-          $serverIso = Join-Path $env:GITHUB_WORKSPACE "server.iso"
-          $url = $env:SERVER_ISO_URL
-
-          Write-Host "============================================================"
-          Write-Host "                 DOWNLOAD WINDOWS SERVER ISO"
-          Write-Host "============================================================"
-
-          if ([string]::IsNullOrWhiteSpace($url)) {
-              throw "Server ISO URL is empty."
-          }
-
-          Write-Host "[+] Destination:"
-          Write-Host "    $serverIso"
-
-          curl.exe `
-              -L `
-              --fail `
-              --retry 5 `
-              --retry-delay 5 `
-              --retry-all-errors `
-              -C - `
-              -o "$serverIso" `
-              "$url"
-
-          if ($LASTEXITCODE -ne 0) {
-              throw "curl failed with exit code $LASTEXITCODE"
-          }
-
-          if (-not (Test-Path $serverIso)) {
-              throw "Windows Server ISO was not downloaded."
-          }
-
-          $size = (Get-Item $serverIso).Length
-
-          Write-Host "[+] Windows Server ISO downloaded."
-          Write-Host "[+] Size: $([math]::Round($size / 1GB, 2)) GB"
-
-      # ============================================================
-      # 4. MOUNT WINDOWS ISO
-      # ============================================================
       - name: Mount Windows ISO
-        shell: pwsh
+        shell: powershell
         run: |
           $ErrorActionPreference = "Stop"
 
-          $iso = Join-Path $env:GITHUB_WORKSPACE "windows.iso"
-
           Write-Host "============================================================"
-          Write-Host "                       MOUNT WINDOWS ISO"
+          Write-Host "                    MOUNT WINDOWS ISO"
           Write-Host "============================================================"
 
-          $diskImage = Mount-DiskImage `
-              -ImagePath $iso `
-              -PassThru
+          Dismount-DiskImage `
+            -ImagePath $env:WINDOWS_ISO `
+            -ErrorAction SilentlyContinue
 
-          Start-Sleep -Seconds 3
+          Mount-DiskImage `
+            -ImagePath $env:WINDOWS_ISO
 
-          $volume = $diskImage |
-              Get-Volume |
-              Where-Object DriveLetter |
-              Select-Object -First 1
+          $image = Get-DiskImage `
+            -ImagePath $env:WINDOWS_ISO
+
+          $volume = $image |
+            Get-Volume |
+            Where-Object {
+              $_.DriveLetter
+            } |
+            Select-Object -First 1
 
           if (-not $volume) {
-              throw "Could not determine Windows ISO drive letter."
+              throw "Could not determine Windows ISO drive."
           }
 
           $drive = "$($volume.DriveLetter):"
 
           Write-Host "[+] Windows ISO mounted at $drive"
 
-          "ISO_DRIVE=$drive" | Out-File `
-              -FilePath $env:GITHUB_ENV `
-              -Append `
-              -Encoding utf8
+          "WINDOWS_ISO_DRIVE=$drive" >> $env:GITHUB_ENV
+
 
       # ============================================================
-      # 5. FIND WINDOWS IMAGE
+      # 4. FIND WINDOWS IMAGE
       # ============================================================
-      - name: Find Windows image
-        shell: pwsh
-        env:
-          WIM_INDEX: ${{ inputs.wim_index }}
+
+      - name: Locate Windows image
+        shell: powershell
         run: |
           $ErrorActionPreference = "Stop"
 
           Write-Host "============================================================"
-          Write-Host "                  FIND WINDOWS IMAGE"
+          Write-Host "                  LOCATE WINDOWS IMAGE"
           Write-Host "============================================================"
 
-          $sources = Join-Path $env:ISO_DRIVE "sources"
+          $wim = Join-Path `
+            $env:WINDOWS_ISO_DRIVE `
+            "sources\install.wim"
 
-          $wim = Join-Path $sources "install.wim"
-          $esd = Join-Path $sources "install.esd"
+          $esd = Join-Path `
+            $env:WINDOWS_ISO_DRIVE `
+            "sources\install.esd"
 
           if (Test-Path $wim) {
-              $imageFile = $wim
+              $image = $wim
           }
           elseif (Test-Path $esd) {
-              $imageFile = $esd
+              $image = $esd
           }
           else {
-              throw "Neither install.wim nor install.esd was found."
+              throw "install.wim/install.esd not found."
           }
 
-          Write-Host "[+] Image:"
-          Write-Host "    $imageFile"
-
-          Write-Host ""
-          Write-Host "========== DISM IMAGE INFO =========="
-
-          dism.exe /Get-WimInfo /WimFile:"$imageFile"
+          & dism.exe `
+            /Get-WimInfo `
+            "/WimFile:$image"
 
           if ($LASTEXITCODE -ne 0) {
               throw "DISM /Get-WimInfo failed."
           }
 
-          "IMAGE_FILE=$imageFile" | Out-File `
-              -FilePath $env:GITHUB_ENV `
-              -Append `
-              -Encoding utf8
+          "WINDOWS_IMAGE_FILE=$image" >> $env:GITHUB_ENV
+
 
       # ============================================================
-      # 6. CREATE MASTER VHDX
+      # 5. CREATE VDI MASTER VHDX
       # ============================================================
-      - name: Create master VHDX
-        shell: pwsh
+
+      - name: Create VDI master VHDX
+        shell: powershell
         run: |
           $ErrorActionPreference = "Stop"
 
-          $WorkDir = $env:GITHUB_WORKSPACE
-          $vhdx = Join-Path $WorkDir "Windows-VDI-Master.vhdx"
+          Write-Host "============================================================"
+          Write-Host "                  CREATE VDI MASTER VHDX"
+          Write-Host "============================================================"
 
-          Write-Host "============================================================"
-          Write-Host "                    CREATE MASTER VHDX"
-          Write-Host "============================================================"
+          $vhdx = Join-Path `
+            $env:WORK_DIR `
+            "Windows-VDI-Master.vhdx"
 
           if (Test-Path $vhdx) {
               Remove-Item $vhdx -Force
           }
 
           New-VHD `
-              -Path $vhdx `
-              -SizeBytes 60GB `
-              -Dynamic |
-              Out-Null
+            -Path $vhdx `
+            -SizeBytes 60GB `
+            -Dynamic | Out-Null
 
-          $vhd = Mount-VHD `
-              -Path $vhdx `
-              -Passthru
-
-          Start-Sleep -Seconds 2
-
-          $disk = Get-Disk |
-              Where-Object {
-                  $_.Number -eq $vhd.DiskNumber
-              } |
-              Select-Object -First 1
-
-          if (-not $disk) {
-              throw "Could not locate mounted VDI VHDX disk."
-          }
-
-          Write-Host "[+] Disk number: $($disk.Number)"
+          $disk = Mount-VHD `
+            -Path $vhdx `
+            -Passthru
 
           Initialize-Disk `
-              -Number $disk.Number `
-              -PartitionStyle GPT
+            -Number $disk.Number `
+            -PartitionStyle GPT
 
           $efi = New-Partition `
-              -DiskNumber $disk.Number `
-              -Size 100MB `
-              -GptType "{C12A7328-F81F-11D2-BA4B-00A0C93EC93B}"
+            -DiskNumber $disk.Number `
+            -Size 100MB `
+            -GptType "{C12A7328-F81F-11D2-BA4B-00A0C93EC93B}"
 
           Format-Volume `
-              -Partition $efi `
-              -FileSystem FAT32 `
-              -NewFileSystemLabel "EFI" `
-              -Confirm:$false |
-              Out-Null
+            -Partition $efi `
+            -FileSystem FAT32 `
+            -NewFileSystemLabel "SYSTEM" `
+            -Confirm:$false | Out-Null
 
-          $os = New-Partition `
-              -DiskNumber $disk.Number `
-              -UseMaximumSize `
-              -AssignDriveLetter
+          $osPartition = New-Partition `
+            -DiskNumber $disk.Number `
+            -UseMaximumSize `
+            -AssignDriveLetter
 
           Format-Volume `
-              -Partition $os `
-              -FileSystem NTFS `
-              -NewFileSystemLabel "Windows" `
-              -Confirm:$false |
-              Out-Null
+            -Partition $osPartition `
+            -FileSystem NTFS `
+            -NewFileSystemLabel "WINDOWS" `
+            -Confirm:$false | Out-Null
 
-          $osLetter = "$($os.DriveLetter):"
+          $osDrive = "$($osPartition.DriveLetter):"
 
-          Write-Host "[+] Windows partition: $osLetter"
+          Write-Host "[+] Disk: $($disk.Number)"
+          Write-Host "[+] OS:   $osDrive"
 
-          "MASTER_VHDX=$vhdx" | Out-File `
-              -FilePath $env:GITHUB_ENV `
-              -Append `
-              -Encoding utf8
+          "MASTER_VHDX=$vhdx" >> $env:GITHUB_ENV
+          "MASTER_DISK=$($disk.Number)" >> $env:GITHUB_ENV
+          "MASTER_OS=$osDrive" >> $env:GITHUB_ENV
 
-          "MASTER_DISK=$($disk.Number)" | Out-File `
-              -FilePath $env:GITHUB_ENV `
-              -Append `
-              -Encoding utf8
-
-          "MASTER_OS=$osLetter" | Out-File `
-              -FilePath $env:GITHUB_ENV `
-              -Append `
-              -Encoding utf8
 
       # ============================================================
-      # 7. APPLY WINDOWS IMAGE
+      # 6. APPLY VDI WINDOWS IMAGE
       # ============================================================
-      - name: Apply Windows image
-        shell: pwsh
-        env:
-          WIM_INDEX: ${{ inputs.wim_index }}
-        run: |
-          $ErrorActionPreference = "Stop"
 
-          Write-Host "============================================================"
-          Write-Host "                   APPLY WINDOWS IMAGE"
-          Write-Host "============================================================"
-
-          dism.exe `
-              /Apply-Image `
-              /ImageFile:"$env:IMAGE_FILE" `
-              /Index:$env:WIM_INDEX `
-              /ApplyDir:"$env:MASTER_OS" `
-              /CheckIntegrity
-
-          if ($LASTEXITCODE -ne 0) {
-              throw "DISM /Apply-Image failed."
-          }
-
-          Write-Host "[+] Windows image applied."
-
-      # ============================================================
-      # 8. BOOT FILES
-      # ============================================================
-      - name: Configure boot files
+      - name: Apply VDI Windows image
         shell: powershell
         run: |
           $ErrorActionPreference = "Stop"
 
           Write-Host "============================================================"
-          Write-Host "                    CONFIGURE BOOT"
+          Write-Host "                 APPLY VDI WINDOWS IMAGE"
           Write-Host "============================================================"
+
+          & dism.exe `
+            /Apply-Image `
+            "/ImageFile:$env:WINDOWS_IMAGE_FILE" `
+            "/Index:$env:WINDOWS_WIM_INDEX" `
+            "/ApplyDir:$env:MASTER_OS" `
+            /CheckIntegrity
+
+          if ($LASTEXITCODE -ne 0) {
+              throw "DISM /Apply-Image failed."
+          }
+
+          Write-Host "[+] VDI Windows image applied."
+
+
+      # ============================================================
+      # 7. CONFIGURE VDI BOOT
+      # ============================================================
+
+      - name: Configure VDI boot files
+        shell: powershell
+        run: |
+          $ErrorActionPreference = "Stop"
 
           $diskNumber = [int]$env:MASTER_DISK
 
-          $efiPartition = Get-Partition -DiskNumber $diskNumber |
-              Where-Object {
-                  $_.GptType -eq "{C12A7328-F81F-11D2-BA4B-00A0C93EC93B}"
-              } |
-              Select-Object -First 1
+          $efiPartition = Get-Partition `
+            -DiskNumber $diskNumber |
+            Where-Object {
+              $_.GptType -eq
+              "{C12A7328-F81F-11D2-BA4B-00A0C93EC93B}"
+            } |
+            Select-Object -First 1
 
           if (-not $efiPartition) {
               throw "EFI partition not found."
@@ -388,1371 +328,1528 @@ jobs:
 
           $partitionNumber = $efiPartition.PartitionNumber
 
-          $diskpartFile = Join-Path $env:TEMP "efi.txt"
+          $diskpartFile = Join-Path `
+            $env:WORK_DIR `
+            "vdi-diskpart.txt"
 
-          $diskpartLines = @(
+          @(
               "select disk $diskNumber"
               "select partition $partitionNumber"
               "assign letter=S"
               "exit"
-          )
-
-          Set-Content `
-              -Path $diskpartFile `
-              -Value $diskpartLines `
-              -Encoding ASCII
+          ) | Set-Content `
+                -Path $diskpartFile `
+                -Encoding ASCII
 
           & diskpart.exe /s $diskpartFile
 
-          $diskpartExit = $LASTEXITCODE
-
-          Remove-Item `
-              $diskpartFile `
-              -Force `
-              -ErrorAction SilentlyContinue
-
-          if ($diskpartExit -ne 0) {
-              throw "DiskPart failed with exit code $diskpartExit."
-          }
-
-          if (-not (Test-Path "$env:MASTER_OS\Windows")) {
-              throw "Windows directory not found."
+          if ($LASTEXITCODE -ne 0) {
+              throw "diskpart failed."
           }
 
           & bcdboot.exe `
-              "$env:MASTER_OS\Windows" `
-              /s S: `
-              /f UEFI
+            "$env:MASTER_OS\Windows" `
+            /s S: `
+            /f UEFI
 
           if ($LASTEXITCODE -ne 0) {
               throw "BCDBOOT failed."
           }
 
-          Write-Host "[+] VDI boot files configured."
+          Write-Host "[+] VDI boot configured."
+
 
       # ============================================================
-      # 9. OPTIMIZE MASTER IMAGE
+      # 8. VDI IMAGE CLEANUP
       # ============================================================
-      - name: Optimize master image
-        shell: pwsh
+
+      - name: Cleanup VDI image
+        shell: powershell
         run: |
           $ErrorActionPreference = "Continue"
 
           Write-Host "============================================================"
-          Write-Host "                   OPTIMIZE MASTER IMAGE"
+          Write-Host "                    VDI IMAGE CLEANUP"
           Write-Host "============================================================"
 
           dism.exe `
-              /Image:"$env:MASTER_OS" `
-              /Cleanup-Image `
-              /StartComponentCleanup
+            "/Image:$env:MASTER_OS" `
+            /Cleanup-Image `
+            /StartComponentCleanup
 
-          Write-Host "[+] Component cleanup finished."
 
       # ============================================================
-      # 10. DISMOUNT MASTER
+      # 9. DISMOUNT VDI MASTER
       # ============================================================
-      - name: Dismount master VHDX
-        shell: pwsh
+
+      - name: Dismount VDI master
+        shell: powershell
         run: |
           $ErrorActionPreference = "Stop"
 
           Dismount-VHD `
-              -Path "$env:MASTER_VHDX"
+            -Path $env:MASTER_VHDX
 
-          Write-Host "[+] Master VHDX dismounted."
+          Write-Host "[+] VDI master VHDX dismounted."
+
 
       # ============================================================
-      # 11. INSTALL RDS ROLES
+      # 10. INSTALL RDS ROLES ON HOST
       # ============================================================
+
       - name: Install RDS roles
-        shell: pwsh
+        shell: powershell
         run: |
           $ErrorActionPreference = "Stop"
 
           Write-Host "============================================================"
-          Write-Host "                     INSTALL RDS"
+          Write-Host "                     INSTALL RDS ROLES"
           Write-Host "============================================================"
 
-          $features = @(
-              "RDS-Connection-Broker",
-              "RDS-Web-Access",
-              "RDS-Virtualization"
-          )
+          Install-WindowsFeature `
+            RDS-Connection-Broker, `
+            RDS-Web-Access, `
+            RDS-Virtualization `
+            -IncludeManagementTools `
+            -Restart:$false
 
-          foreach ($feature in $features) {
+          Write-Host "[+] RDS roles installed on Hyper-V host."
 
-              Write-Host ""
-              Write-Host "========== $feature =========="
-
-              $result = Install-WindowsFeature `
-                  -Name $feature `
-                  -IncludeManagementTools `
-                  -Restart:$false
-
-              Write-Host "[+] Success       : $($result.Success)"
-              Write-Host "[+] RestartNeeded : $($result.RestartNeeded)"
-              Write-Host "[+] ExitCode      : $($result.ExitCode)"
-
-              if (-not $result.Success) {
-                  throw "Failed to install $feature"
-              }
-          }
-
-          Write-Host "[+] RDS role installation complete."
-          Write-Host "[!] No manual reboot performed."
 
       # ============================================================
-      # 12. VERIFY RDS
+      # 11. VERIFY RDS ROLES
       # ============================================================
+
       - name: Verify RDS roles
-        shell: pwsh
+        shell: powershell
         run: |
           $ErrorActionPreference = "Continue"
 
-          Write-Host "============================================================"
-          Write-Host "                     VERIFY RDS"
-          Write-Host "============================================================"
-
           Get-WindowsFeature |
-              Where-Object {
-                  $_.Name -in @(
-                      "RDS-Connection-Broker",
-                      "RDS-Web-Access",
-                      "RDS-Virtualization"
-                  )
-              } |
-              Format-Table Name,InstallState -AutoSize
+            Where-Object {
+              $_.Name -in @(
+                "RDS-Connection-Broker",
+                "RDS-Web-Access",
+                "RDS-Virtualization"
+              )
+            } |
+            Format-Table Name,InstallState
 
-          Write-Host ""
-          Write-Host "========== RDS SERVICES =========="
-
-          Get-Service |
-              Where-Object {
-                  $_.Name -match "TermService|RDMS|Tssdis|W3SVC"
-              } |
-              Format-Table Name,Status,StartType -AutoSize
 
       # ============================================================
-      # 13. VDI NETWORK
+      # 12. CREATE VDI-NAT
       # ============================================================
-      - name: Configure Hyper-V VDI network
+
+      - name: Create VDI-NAT
         shell: powershell
         run: |
           $ErrorActionPreference = "Stop"
-
-          Write-Host "============================================================"
-          Write-Host "                 CONFIGURE VDI NETWORK"
-          Write-Host "============================================================"
 
           $switchName = "VDI-NAT"
-          $gatewayIp  = "192.168.250.1"
-          $prefix     = 24
-          $natName    = "VDI-NAT"
-          $natPrefix  = "192.168.250.0/24"
+          $gateway = "192.168.250.1"
+          $prefix = "192.168.250.0/24"
 
-          $switch = Get-VMSwitch `
-              -Name $switchName `
-              -ErrorAction SilentlyContinue
+          if (-not (Get-VMSwitch -Name $switchName -ErrorAction SilentlyContinue)) {
 
-          if (-not $switch) {
               New-VMSwitch `
-                  -Name $switchName `
-                  -SwitchType Internal `
-                  -ErrorAction Stop |
-                  Out-Null
-
-              Write-Host "[+] VDI switch created."
-          }
-          else {
-              Write-Host "[*] VDI-NAT already exists."
+                -Name $switchName `
+                -SwitchType Internal | Out-Null
           }
 
-          $adapter = Get-NetAdapter |
-              Where-Object {
-                  $_.Name -eq "vEthernet ($switchName)"
-              } |
-              Select-Object -First 1
+          $adapter = Get-NetAdapter `
+            -Name "vEthernet ($switchName)" `
+            -ErrorAction Stop
 
-          if (-not $adapter) {
-              throw "Could not find VDI Hyper-V adapter."
-          }
+          $ip = Get-NetIPAddress `
+            -InterfaceIndex $adapter.ifIndex `
+            -AddressFamily IPv4 `
+            -ErrorAction SilentlyContinue |
+            Where-Object {
+              $_.IPAddress -eq $gateway
+            }
 
-          $gatewayExists = Get-NetIPAddress `
-              -InterfaceIndex $adapter.ifIndex `
-              -AddressFamily IPv4 `
-              -ErrorAction SilentlyContinue |
-              Where-Object {
-                  $_.IPAddress -eq $gatewayIp
-              }
-
-          if (-not $gatewayExists) {
-
-              Get-NetIPAddress `
-                  -InterfaceIndex $adapter.ifIndex `
-                  -AddressFamily IPv4 `
-                  -ErrorAction SilentlyContinue |
-                  Remove-NetIPAddress `
-                      -Confirm:$false `
-                      -ErrorAction SilentlyContinue
+          if (-not $ip) {
 
               New-NetIPAddress `
-                  -IPAddress $gatewayIp `
-                  -PrefixLength $prefix `
-                  -InterfaceIndex $adapter.ifIndex `
-                  -ErrorAction Stop |
-                  Out-Null
+                -InterfaceIndex $adapter.ifIndex `
+                -IPAddress $gateway `
+                -PrefixLength 24 `
+                -AddressFamily IPv4 | Out-Null
           }
 
-          $nat = Get-NetNat `
-              -ErrorAction SilentlyContinue |
-              Where-Object {
-                  $_.Name -eq $natName
-              } |
-              Select-Object -First 1
+          if (-not (Get-NetNat -Name $switchName -ErrorAction SilentlyContinue)) {
 
-          if (-not $nat) {
               New-NetNat `
-                  -Name $natName `
-                  -InternalIPInterfaceAddressPrefix $natPrefix `
-                  -ErrorAction Stop |
-                  Out-Null
+                -Name $switchName `
+                -InternalIPInterfaceAddressPrefix $prefix | Out-Null
           }
 
-          "VDI_SWITCH=$switchName" | Out-File `
-              -FilePath $env:GITHUB_ENV `
-              -Append `
-              -Encoding utf8
+          "VDI_SWITCH=$switchName" >> $env:GITHUB_ENV
 
-          Write-Host "[+] VDI network ready."
+          Write-Host "[+] VDI-NAT ready."
+
 
       # ============================================================
-      # 14. SERVER NETWORK
+      # 13. CREATE RDS MASTER VM
       # ============================================================
-      - name: Configure Hyper-V Server network
+
+      - name: Create RDS master template
+        shell: powershell
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          $vmName = "RDS-Master-Template"
+
+          if (Get-VM -Name $vmName -ErrorAction SilentlyContinue) {
+
+              Stop-VM `
+                -Name $vmName `
+                -TurnOff `
+                -Force `
+                -ErrorAction SilentlyContinue
+
+              Remove-VM `
+                -Name $vmName `
+                -Force
+          }
+
+          New-VM `
+            -Name $vmName `
+            -Generation 2 `
+            -MemoryStartupBytes 4GB `
+            -VHDPath $env:MASTER_VHDX `
+            -SwitchName $env:VDI_SWITCH | Out-Null
+
+          Set-VM `
+            -Name $vmName `
+            -AutomaticStopAction TurnOff `
+            -AutomaticStartAction Nothing
+
+          Stop-VM `
+            -Name $vmName `
+            -TurnOff `
+            -Force `
+            -ErrorAction SilentlyContinue
+
+          "MASTER_VM=$vmName" >> $env:GITHUB_ENV
+
+          Get-VM -Name $vmName |
+            Select-Object Name,State,Generation,MemoryStartup |
+            Format-Table
+
+
+      # ============================================================
+      # ============================================================
+      #
+      #                SERVER-DC01 SECTION
+      #
+      # ============================================================
+      # ============================================================
+
+
+      # ============================================================
+      # 14. DOWNLOAD WINDOWS SERVER ISO
+      # ============================================================
+
+      - name: Download Windows Server ISO
         shell: powershell
         run: |
           $ErrorActionPreference = "Stop"
 
           Write-Host "============================================================"
-          Write-Host "                CONFIGURE SERVER NETWORK"
+          Write-Host "              DOWNLOAD WINDOWS SERVER ISO"
           Write-Host "============================================================"
 
-          $switchName = "SERVER-NAT"
-          $gatewayIp  = "192.168.251.1"
-          $prefix     = 24
-          $natName    = "SERVER-NAT"
-          $natPrefix  = "192.168.251.0/24"
+          $iso = Join-Path `
+            $env:WORK_DIR `
+            "windows-server.iso"
 
-          $switch = Get-VMSwitch `
-              -Name $switchName `
-              -ErrorAction SilentlyContinue
-
-          if (-not $switch) {
-
-              Write-Host "[+] Creating SERVER-NAT..."
-
-              New-VMSwitch `
-                  -Name $switchName `
-                  -SwitchType Internal `
-                  -ErrorAction Stop |
-                  Out-Null
-          }
-          else {
-              Write-Host "[*] SERVER-NAT already exists."
+          if (Test-Path $iso) {
+              Remove-Item $iso -Force
           }
 
-          $adapter = Get-NetAdapter |
-              Where-Object {
-                  $_.Name -eq "vEthernet ($switchName)"
-              } |
-              Select-Object -First 1
+          & curl.exe `
+            -L `
+            --fail `
+            --retry 5 `
+            --retry-delay 5 `
+            --retry-all-errors `
+            -C - `
+            -o $iso `
+            $env:SERVER_ISO_URL
 
-          if (-not $adapter) {
-              throw "Could not find Hyper-V adapter: vEthernet ($switchName)"
+          if ($LASTEXITCODE -ne 0) {
+              throw "Windows Server ISO download failed."
           }
 
-          Write-Host "[+] Adapter: $($adapter.Name)"
-
-          $gatewayExists = Get-NetIPAddress `
-              -InterfaceIndex $adapter.ifIndex `
-              -AddressFamily IPv4 `
-              -ErrorAction SilentlyContinue |
-              Where-Object {
-                  $_.IPAddress -eq $gatewayIp
-              }
-
-          if (-not $gatewayExists) {
-
-              Write-Host "[+] Configuring gateway $gatewayIp/$prefix"
-
-              Get-NetIPAddress `
-                  -InterfaceIndex $adapter.ifIndex `
-                  -AddressFamily IPv4 `
-                  -ErrorAction SilentlyContinue |
-                  Remove-NetIPAddress `
-                      -Confirm:$false `
-                      -ErrorAction SilentlyContinue
-
-              New-NetIPAddress `
-                  -IPAddress $gatewayIp `
-                  -PrefixLength $prefix `
-                  -InterfaceIndex $adapter.ifIndex `
-                  -ErrorAction Stop |
-                  Out-Null
+          if (-not (Test-Path $iso)) {
+              throw "Windows Server ISO was not created."
           }
 
-          $nat = Get-NetNat `
-              -ErrorAction SilentlyContinue |
-              Where-Object {
-                  $_.Name -eq $natName
-              } |
-              Select-Object -First 1
+          Write-Host "[+] Server ISO downloaded."
 
-          if ($nat) {
+          "SERVER_ISO=$iso" >> $env:GITHUB_ENV
 
-              Write-Host "[+] SERVER-NAT already exists."
-
-              if ($nat.InternalIPInterfaceAddressPrefix -ne $natPrefix) {
-                  throw "SERVER-NAT has unexpected prefix: $($nat.InternalIPInterfaceAddressPrefix)"
-              }
-
-          }
-          else {
-
-              Write-Host "[+] Creating SERVER-NAT..."
-
-              New-NetNat `
-                  -Name $natName `
-                  -InternalIPInterfaceAddressPrefix $natPrefix `
-                  -ErrorAction Stop |
-                  Out-Null
-          }
-
-          "SERVER_SWITCH=$switchName" | Out-File `
-              -FilePath $env:GITHUB_ENV `
-              -Append `
-              -Encoding utf8
-
-          Write-Host ""
-          Write-Host "============================================================"
-          Write-Host "                 SERVER NETWORK READY"
-          Write-Host "============================================================"
-
-          Write-Host "[+] Switch : $switchName"
-          Write-Host "[+] Gateway: $gatewayIp"
-          Write-Host "[+] NAT    : $natName"
-          Write-Host "[+] Prefix : $natPrefix"
-
-          Get-VMSwitch -Name $switchName
-
-          Get-NetIPAddress `
-              -InterfaceIndex $adapter.ifIndex `
-              -AddressFamily IPv4 |
-              Select-Object IPAddress,PrefixLength,InterfaceIndex
-
-          Get-NetNat |
-              Where-Object Name -eq $natName |
-              Select-Object Name,InternalIPInterfaceAddressPrefix
 
       # ============================================================
       # 15. MOUNT SERVER ISO
       # ============================================================
+
       - name: Mount Windows Server ISO
-        shell: pwsh
+        shell: powershell
         run: |
           $ErrorActionPreference = "Stop"
 
-          $serverIso = Join-Path `
-              $env:GITHUB_WORKSPACE `
-              "server.iso"
+          Dismount-DiskImage `
+            -ImagePath $env:SERVER_ISO `
+            -ErrorAction SilentlyContinue
 
-          Write-Host "============================================================"
-          Write-Host "                  MOUNT SERVER ISO"
-          Write-Host "============================================================"
+          Mount-DiskImage `
+            -ImagePath $env:SERVER_ISO
 
-          $diskImage = Mount-DiskImage `
-              -ImagePath $serverIso `
-              -PassThru
+          $image = Get-DiskImage `
+            -ImagePath $env:SERVER_ISO
 
-          Start-Sleep -Seconds 3
-
-          $volume = $diskImage |
-              Get-Volume |
-              Where-Object DriveLetter |
-              Select-Object -First 1
+          $volume = $image |
+            Get-Volume |
+            Where-Object {
+              $_.DriveLetter
+            } |
+            Select-Object -First 1
 
           if (-not $volume) {
-              throw "Could not determine Server ISO drive letter."
+              throw "Could not determine Server ISO drive."
           }
 
           $drive = "$($volume.DriveLetter):"
 
           Write-Host "[+] Server ISO mounted at $drive"
 
-          "SERVER_ISO_DRIVE=$drive" | Out-File `
-              -FilePath $env:GITHUB_ENV `
-              -Append `
-              -Encoding utf8
+          "SERVER_ISO_DRIVE=$drive" >> $env:GITHUB_ENV
+
 
       # ============================================================
-      # 16. FIND SERVER IMAGE
+      # 16. LOCATE SERVER IMAGE
       # ============================================================
-      - name: Find Windows Server image
-        shell: pwsh
-        run: |
-          $ErrorActionPreference = "Stop"
 
-          Write-Host "============================================================"
-          Write-Host "                FIND WINDOWS SERVER IMAGE"
-          Write-Host "============================================================"
-
-          $sources = Join-Path $env:SERVER_ISO_DRIVE "sources"
-
-          $wim = Join-Path $sources "install.wim"
-          $esd = Join-Path $sources "install.esd"
-
-          if (Test-Path $wim) {
-              $imageFile = $wim
-          }
-          elseif (Test-Path $esd) {
-              $imageFile = $esd
-          }
-          else {
-              throw "Neither install.wim nor install.esd was found."
-          }
-
-          Write-Host "[+] Server image:"
-          Write-Host "    $imageFile"
-
-          dism.exe /Get-WimInfo /WimFile:"$imageFile"
-
-          if ($LASTEXITCODE -ne 0) {
-              throw "DISM /Get-WimInfo failed for Server image."
-          }
-
-          "SERVER_IMAGE_FILE=$imageFile" | Out-File `
-              -FilePath $env:GITHUB_ENV `
-              -Append `
-              -Encoding utf8
-
-      # ============================================================
-      # 17. CREATE SERVER VHDX
-      # ============================================================
-      - name: Create Server VHDX
-        shell: pwsh
-        run: |
-          $ErrorActionPreference = "Stop"
-
-          $serverVhdx = Join-Path `
-              $env:GITHUB_WORKSPACE `
-              "Server-DC01.vhdx"
-
-          Write-Host "============================================================"
-          Write-Host "                  CREATE SERVER VHDX"
-          Write-Host "============================================================"
-
-          if (Test-Path $serverVhdx) {
-              Remove-Item `
-                  $serverVhdx `
-                  -Force
-          }
-
-          New-VHD `
-              -Path $serverVhdx `
-              -SizeBytes 60GB `
-              -Dynamic |
-              Out-Null
-
-          $vhd = Mount-VHD `
-              -Path $serverVhdx `
-              -Passthru
-
-          Start-Sleep -Seconds 2
-
-          $disk = Get-Disk `
-              -Number $vhd.DiskNumber
-
-          Initialize-Disk `
-              -Number $disk.Number `
-              -PartitionStyle GPT
-
-          $efi = New-Partition `
-              -DiskNumber $disk.Number `
-              -Size 100MB `
-              -GptType "{C12A7328-F81F-11D2-BA4B-00A0C93EC93B}"
-
-          Format-Volume `
-              -Partition $efi `
-              -FileSystem FAT32 `
-              -NewFileSystemLabel "EFI" `
-              -Confirm:$false |
-              Out-Null
-
-          $os = New-Partition `
-              -DiskNumber $disk.Number `
-              -UseMaximumSize `
-              -AssignDriveLetter
-
-          Format-Volume `
-              -Partition $os `
-              -FileSystem NTFS `
-              -NewFileSystemLabel "Windows Server" `
-              -Confirm:$false |
-              Out-Null
-
-          $osLetter = "$($os.DriveLetter):"
-
-          Write-Host "[+] Server disk: $($disk.Number)"
-          Write-Host "[+] Server OS : $osLetter"
-
-          "SERVER_VHDX=$serverVhdx" | Out-File `
-              -FilePath $env:GITHUB_ENV `
-              -Append `
-              -Encoding utf8
-
-          "SERVER_DISK=$($disk.Number)" | Out-File `
-              -FilePath $env:GITHUB_ENV `
-              -Append `
-              -Encoding utf8
-
-          "SERVER_OS=$osLetter" | Out-File `
-              -FilePath $env:GITHUB_ENV `
-              -Append `
-              -Encoding utf8
-
-      # ============================================================
-      # 18. APPLY SERVER IMAGE
-      # ============================================================
-      - name: Apply Windows Server image
-        shell: pwsh
-        env:
-          SERVER_WIM_INDEX: ${{ inputs.server_wim_index }}
-        run: |
-          $ErrorActionPreference = "Stop"
-
-          Write-Host "============================================================"
-          Write-Host "                APPLY WINDOWS SERVER IMAGE"
-          Write-Host "============================================================"
-
-          Write-Host "[+] Image : $env:SERVER_IMAGE_FILE"
-          Write-Host "[+] Index : $env:SERVER_WIM_INDEX"
-          Write-Host "[+] Target: $env:SERVER_OS"
-
-          dism.exe `
-              /Apply-Image `
-              /ImageFile:"$env:SERVER_IMAGE_FILE" `
-              /Index:$env:SERVER_WIM_INDEX `
-              /ApplyDir:"$env:SERVER_OS" `
-              /CheckIntegrity
-
-          if ($LASTEXITCODE -ne 0) {
-              throw "DISM /Apply-Image failed for Windows Server."
-          }
-
-          Write-Host "[+] Windows Server image applied."
-
-      # ============================================================
-      # 19. SERVER BOOT FILES
-      # ============================================================
-      - name: Configure Server boot files
+      - name: Locate Windows Server image
         shell: powershell
         run: |
           $ErrorActionPreference = "Stop"
 
           Write-Host "============================================================"
-          Write-Host "               CONFIGURE SERVER BOOT"
+          Write-Host "             LOCATE WINDOWS SERVER IMAGE"
+          Write-Host "============================================================"
+
+          $wim = Join-Path `
+            $env:SERVER_ISO_DRIVE `
+            "sources\install.wim"
+
+          $esd = Join-Path `
+            $env:SERVER_ISO_DRIVE `
+            "sources\install.esd"
+
+          if (Test-Path $wim) {
+              $image = $wim
+          }
+          elseif (Test-Path $esd) {
+              $image = $esd
+          }
+          else {
+              throw "Server install.wim/install.esd not found."
+          }
+
+          & dism.exe `
+            /Get-WimInfo `
+            "/WimFile:$image"
+
+          if ($LASTEXITCODE -ne 0) {
+              throw "Server DISM /Get-WimInfo failed."
+          }
+
+          "SERVER_IMAGE_FILE=$image" >> $env:GITHUB_ENV
+
+
+      # ============================================================
+      # 17. CREATE SERVER VHDX
+      # ============================================================
+
+      - name: Create SERVER-DC01 VHDX
+        shell: powershell
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          Write-Host "============================================================"
+          Write-Host "                 CREATE SERVER VHDX"
+          Write-Host "============================================================"
+
+          $vhdx = Join-Path `
+            $env:WORK_DIR `
+            "SERVER-DC01.vhdx"
+
+          if (Test-Path $vhdx) {
+              Remove-Item $vhdx -Force
+          }
+
+          New-VHD `
+            -Path $vhdx `
+            -SizeBytes 60GB `
+            -Dynamic | Out-Null
+
+          $disk = Mount-VHD `
+            -Path $vhdx `
+            -Passthru
+
+          Initialize-Disk `
+            -Number $disk.Number `
+            -PartitionStyle GPT
+
+          $efi = New-Partition `
+            -DiskNumber $disk.Number `
+            -Size 100MB `
+            -GptType "{C12A7328-F81F-11D2-BA4B-00A0C93EC93B}"
+
+          Format-Volume `
+            -Partition $efi `
+            -FileSystem FAT32 `
+            -NewFileSystemLabel "SYSTEM" `
+            -Confirm:$false | Out-Null
+
+          $osPartition = New-Partition `
+            -DiskNumber $disk.Number `
+            -UseMaximumSize `
+            -AssignDriveLetter
+
+          Format-Volume `
+            -Partition $osPartition `
+            -FileSystem NTFS `
+            -NewFileSystemLabel "SERVER-OS" `
+            -Confirm:$false | Out-Null
+
+          $osDrive = "$($osPartition.DriveLetter):"
+
+          Write-Host "[+] Server disk: $($disk.Number)"
+          Write-Host "[+] Server OS:   $osDrive"
+
+          "SERVER_VHDX=$vhdx" >> $env:GITHUB_ENV
+          "SERVER_DISK=$($disk.Number)" >> $env:GITHUB_ENV
+          "SERVER_OS=$osDrive" >> $env:GITHUB_ENV
+
+
+      # ============================================================
+      # 18. APPLY SERVER IMAGE
+      # ============================================================
+
+      - name: Apply Windows Server image
+        shell: powershell
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          Write-Host "============================================================"
+          Write-Host "              APPLY WINDOWS SERVER IMAGE"
+          Write-Host "============================================================"
+
+          & dism.exe `
+            /Apply-Image `
+            "/ImageFile:$env:SERVER_IMAGE_FILE" `
+            "/Index:$env:SERVER_WIM_INDEX" `
+            "/ApplyDir:$env:SERVER_OS" `
+            /CheckIntegrity
+
+          if ($LASTEXITCODE -ne 0) {
+              throw "Server DISM /Apply-Image failed."
+          }
+
+          Write-Host "[+] Server image applied."
+
+
+      # ============================================================
+      # 19. CREATE UNATTEND.XML INSIDE SERVER VHDX
+      # ============================================================
+
+      - name: Configure SERVER-DC01 Unattend.xml
+        shell: powershell
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          Write-Host "============================================================"
+          Write-Host "              CREATE SERVER UNATTEND.XML"
+          Write-Host "============================================================"
+
+          if ([string]::IsNullOrWhiteSpace($env:SERVER_ADMIN_PASSWORD)) {
+              throw "SERVER_ADMIN_PASSWORD secret is empty."
+          }
+
+          $panther = Join-Path `
+            $env:SERVER_OS `
+            "Windows\Panther"
+
+          $unattend = Join-Path `
+            $panther `
+            "Unattend.xml"
+
+          New-Item `
+            -ItemType Directory `
+            -Path $panther `
+            -Force | Out-Null
+
+          $password = $env:SERVER_ADMIN_PASSWORD
+
+          $xml = @"
+<?xml version="1.0" encoding="utf-8"?>
+
+<unattend
+    xmlns="urn:schemas-microsoft-com:unattend"
+    xmlns:wcm="http://schemas.microsoft.com/WMIConfig/2002/State">
+
+    <settings pass="specialize">
+
+        <component
+            name="Microsoft-Windows-Shell-Setup"
+            processorArchitecture="amd64"
+            publicKeyToken="31bf3856ad364e35"
+            language="neutral"
+            versionScope="nonSxS">
+
+            <ComputerName>SERVER-DC01</ComputerName>
+
+        </component>
+
+    </settings>
+
+    <settings pass="oobeSystem">
+
+        <component
+            name="Microsoft-Windows-Shell-Setup"
+            processorArchitecture="amd64"
+            publicKeyToken="31bf3856ad364e35"
+            language="neutral"
+            versionScope="nonSxS">
+
+            <OOBE>
+
+                <HideEULAPage>true</HideEULAPage>
+
+                <HideLocalAccountScreen>true</HideLocalAccountScreen>
+
+                <HideOEMRegistrationScreen>true</HideOEMRegistrationScreen>
+
+                <HideOnlineAccountScreens>true</HideOnlineAccountScreens>
+
+                <HideWirelessSetupInOOBE>true</HideWirelessSetupInOOBE>
+
+                <NetworkLocation>Work</NetworkLocation>
+
+                <ProtectYourPC>1</ProtectYourPC>
+
+            </OOBE>
+
+            <UserAccounts>
+
+                <AdministratorPassword>
+                    <Value>$password</Value>
+                    <PlainText>true</PlainText>
+                </AdministratorPassword>
+
+            </UserAccounts>
+
+        </component>
+
+    </settings>
+
+</unattend>
+"@
+
+          Set-Content `
+            -Path $unattend `
+            -Value $xml `
+            -Encoding UTF8
+
+          if (-not (Test-Path $unattend)) {
+              throw "Unattend.xml was not created."
+          }
+
+          Write-Host "[+] Unattend.xml written inside SERVER-DC01 VHDX."
+          Write-Host "[+] Password configured for built-in Administrator."
+          Write-Host "[+] XML contents are NOT printed."
+
+
+      # ============================================================
+      # 20. CONFIGURE SERVER BOOT
+      # ============================================================
+
+      - name: Configure SERVER-DC01 boot
+        shell: powershell
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          Write-Host "============================================================"
+          Write-Host "                 CONFIGURE SERVER BOOT"
           Write-Host "============================================================"
 
           $diskNumber = [int]$env:SERVER_DISK
 
-          $efiPartition = Get-Partition `
-              -DiskNumber $diskNumber |
-              Where-Object {
-                  $_.GptType -eq "{C12A7328-F81F-11D2-BA4B-00A0C93EC93B}"
-              } |
-              Select-Object -First 1
+          $efi = Get-Partition `
+            -DiskNumber $diskNumber |
+            Where-Object {
+              $_.GptType -eq
+              "{C12A7328-F81F-11D2-BA4B-00A0C93EC93B}"
+            } |
+            Select-Object -First 1
 
-          if (-not $efiPartition) {
+          if (-not $efi) {
               throw "Server EFI partition not found."
           }
 
-          $partitionNumber = $efiPartition.PartitionNumber
+          $partitionNumber = $efi.PartitionNumber
 
           $diskpartFile = Join-Path `
-              $env:TEMP `
-              "server-efi.txt"
+            $env:WORK_DIR `
+            "server-diskpart.txt"
 
-          $diskpartLines = @(
+          @(
               "select disk $diskNumber"
               "select partition $partitionNumber"
-              "assign letter=T"
+              "assign letter=S"
               "exit"
-          )
-
-          Set-Content `
-              -Path $diskpartFile `
-              -Value $diskpartLines `
-              -Encoding ASCII
+          ) | Set-Content `
+                -Path $diskpartFile `
+                -Encoding ASCII
 
           & diskpart.exe /s $diskpartFile
 
-          $diskpartExit = $LASTEXITCODE
-
-          Remove-Item `
-              $diskpartFile `
-              -Force `
-              -ErrorAction SilentlyContinue
-
-          if ($diskpartExit -ne 0) {
-              throw "DiskPart failed for Server EFI."
-          }
-
-          if (-not (Test-Path "$env:SERVER_OS\Windows")) {
-              throw "Server Windows directory not found."
+          if ($LASTEXITCODE -ne 0) {
+              throw "Server diskpart failed."
           }
 
           & bcdboot.exe `
-              "$env:SERVER_OS\Windows" `
-              /s T: `
-              /f UEFI
+            "$env:SERVER_OS\Windows" `
+            /s S: `
+            /f UEFI
 
           if ($LASTEXITCODE -ne 0) {
-              throw "BCDBOOT failed for Server VM."
+              throw "Server BCDBOOT failed."
           }
 
-          Write-Host "[+] Server boot files configured."
+          Write-Host "[+] Server boot configured."
+
 
       # ============================================================
-      # 20. DISMOUNT SERVER VHDX
+      # 21. VERIFY SERVER UNATTEND
       # ============================================================
-      - name: Dismount Server VHDX
-        shell: pwsh
+
+      - name: Verify SERVER-DC01 image
+        shell: powershell
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          Write-Host "============================================================"
+          Write-Host "                VERIFY SERVER IMAGE"
+          Write-Host "============================================================"
+
+          $unattend = Join-Path `
+            $env:SERVER_OS `
+            "Windows\Panther\Unattend.xml"
+
+          if (-not (Test-Path $unattend)) {
+              throw "SERVER Unattend.xml is missing."
+          }
+
+          Write-Host "[+] Unattend.xml exists."
+
+          if (-not (Test-Path "$env:SERVER_OS\Windows")) {
+              throw "Windows directory is missing."
+          }
+
+          if (-not (Test-Path "S:\EFI\Microsoft\Boot\bootmgfw.efi")) {
+              throw "UEFI boot files are missing."
+          }
+
+          Write-Host "[+] Server image is ready."
+
+
+      # ============================================================
+      # 22. DISMOUNT SERVER VHDX
+      # ============================================================
+
+      - name: Dismount SERVER-DC01 VHDX
+        shell: powershell
         run: |
           $ErrorActionPreference = "Stop"
 
           Dismount-VHD `
-              -Path "$env:SERVER_VHDX"
+            -Path $env:SERVER_VHDX
 
-          Write-Host "[+] Server VHDX dismounted."
+          Write-Host "[+] SERVER-DC01 VHDX dismounted."
+
 
       # ============================================================
-      # 21. CREATE SERVER VM
+      # 23. CREATE SERVER-NAT
       # ============================================================
-      - name: Create Server VM
-        shell: pwsh
+
+      - name: Create SERVER-NAT
+        shell: powershell
         run: |
           $ErrorActionPreference = "Stop"
 
           Write-Host "============================================================"
-          Write-Host "                    CREATE SERVER VM"
+          Write-Host "                    CREATE SERVER-NAT"
+          Write-Host "============================================================"
+
+          $switchName = "SERVER-NAT"
+          $gateway = "192.168.251.1"
+          $prefix = "192.168.251.0/24"
+
+          if (-not (Get-VMSwitch -Name $switchName -ErrorAction SilentlyContinue)) {
+
+              New-VMSwitch `
+                -Name $switchName `
+                -SwitchType Internal | Out-Null
+          }
+
+          $adapter = Get-NetAdapter `
+            -Name "vEthernet ($switchName)" `
+            -ErrorAction Stop
+
+          $existingIP = Get-NetIPAddress `
+            -InterfaceIndex $adapter.ifIndex `
+            -AddressFamily IPv4 `
+            -ErrorAction SilentlyContinue |
+            Where-Object {
+              $_.IPAddress -eq $gateway
+            }
+
+          if (-not $existingIP) {
+
+              New-NetIPAddress `
+                -InterfaceIndex $adapter.ifIndex `
+                -IPAddress $gateway `
+                -PrefixLength 24 `
+                -AddressFamily IPv4 | Out-Null
+          }
+
+          if (-not (Get-NetNat -Name $switchName -ErrorAction SilentlyContinue)) {
+
+              New-NetNat `
+                -Name $switchName `
+                -InternalIPInterfaceAddressPrefix $prefix | Out-Null
+          }
+
+          "SERVER_SWITCH=$switchName" >> $env:GITHUB_ENV
+
+          Write-Host "[+] SERVER-NAT ready."
+          Write-Host "[+] Gateway: $gateway"
+          Write-Host "[+] Network: $prefix"
+
+
+      # ============================================================
+      # 24. CREATE SERVER-DC01 VM
+      # ============================================================
+
+      - name: Create SERVER-DC01 VM
+        shell: powershell
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          Write-Host "============================================================"
+          Write-Host "                  CREATE SERVER-DC01"
           Write-Host "============================================================"
 
           $vmName = "SERVER-DC01"
 
-          $existing = Get-VM `
-              -Name $vmName `
-              -ErrorAction SilentlyContinue
+          $old = Get-VM `
+            -Name $vmName `
+            -ErrorAction SilentlyContinue
 
-          if ($existing) {
+          if ($old) {
 
-              Write-Host "[*] Existing SERVER-DC01 found."
+              if ($old.State -ne "Off") {
 
-              if ($existing.State -ne "Off") {
                   Stop-VM `
-                      -Name $vmName `
-                      -Force `
-                      -TurnOff
+                    -Name $vmName `
+                    -TurnOff `
+                    -Force
               }
 
               Remove-VM `
-                  -Name $vmName `
-                  -Force
+                -Name $vmName `
+                -Force
           }
 
           New-VM `
-              -Name $vmName `
-              -Generation 2 `
-              -MemoryStartupBytes 4GB `
-              -VHDPath "$env:SERVER_VHDX" `
-              -SwitchName "$env:SERVER_SWITCH" |
-              Out-Null
+            -Name $vmName `
+            -Generation 2 `
+            -MemoryStartupBytes 4GB `
+            -VHDPath $env:SERVER_VHDX `
+            -SwitchName $env:SERVER_SWITCH | Out-Null
 
-          # --------------------------------------------------------
-          # Nested virtualization
-          # --------------------------------------------------------
           Set-VMProcessor `
-              -VMName $vmName `
-              -ExposeVirtualizationExtensions $true
+            -VMName $vmName `
+            -Count 2 `
+            -ExposeVirtualizationExtensions $true
+
+          Set-VMNetworkAdapter `
+            -VMName $vmName `
+            -MacAddressSpoofing On
 
           Set-VM `
-              -Name $vmName `
-              -AutomaticStopAction TurnOff `
-              -AutomaticStartAction Nothing
+            -Name $vmName `
+            -AutomaticStopAction TurnOff `
+            -AutomaticStartAction Nothing
 
-          Write-Host "[+] Server VM created."
-          Write-Host "[+] Name: $vmName"
-          Write-Host "[+] Switch: $env:SERVER_SWITCH"
-          Write-Host "[+] Nested virtualization: ENABLED"
+          Write-Host "[+] SERVER-DC01 created."
+          Write-Host "[+] Nested virtualization enabled."
+          Write-Host "[+] MAC spoofing enabled."
 
-          Get-VMProcessor `
-              -VMName $vmName |
-              Format-Table `
-                  VMName,
-                  Count,
-                  ExposeVirtualizationExtensions -AutoSize
-
-          "SERVER_VM=$vmName" | Out-File `
-              -FilePath $env:GITHUB_ENV `
-              -Append `
-              -Encoding utf8
 
       # ============================================================
-      # 22. START SERVER VM
+      # 25. START SERVER-DC01
       # ============================================================
-      - name: Start Server VM
-        shell: pwsh
+
+      - name: Start SERVER-DC01
+        shell: powershell
         run: |
           $ErrorActionPreference = "Stop"
 
           Write-Host "============================================================"
-          Write-Host "                    START SERVER VM"
+          Write-Host "                  START SERVER-DC01"
           Write-Host "============================================================"
 
-          $vmName = $env:SERVER_VM
-
           Start-VM `
-              -Name $vmName
+            -Name "SERVER-DC01"
 
-          Write-Host "[+] VM start requested."
+          Start-Sleep -Seconds 5
 
-          $timeout = 180
-          $elapsed = 0
+          Get-VM `
+            -Name "SERVER-DC01" |
+            Select-Object `
+              Name,
+              State,
+              Status,
+              Generation,
+              MemoryStartup |
+            Format-List
 
-          while ($elapsed -lt $timeout) {
-
-              $vm = Get-VM -Name $vmName
-
-              Write-Host "[*] State: $($vm.State)"
-
-              if ($vm.State -eq "Running") {
-                  break
-              }
-
-              Start-Sleep -Seconds 5
-              $elapsed += 5
-          }
-
-          $vm = Get-VM -Name $vmName
-
-          if ($vm.State -ne "Running") {
-              throw "SERVER-DC01 failed to reach Running state."
-          }
-
-          Write-Host "[+] SERVER-DC01 is RUNNING."
 
       # ============================================================
-      # 23. SERVER VM INTEGRATION SERVICES
+      # 26. BUILD POWERSHELL DIRECT CREDENTIAL
       # ============================================================
-      - name: Verify Server VM integration
-        shell: pwsh
+
+      - name: Prepare SERVER-DC01 credentials
+        shell: powershell
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          if ([string]::IsNullOrWhiteSpace($env:SERVER_ADMIN_PASSWORD)) {
+              throw "SERVER_ADMIN_PASSWORD secret is empty."
+          }
+
+          $secure = ConvertTo-SecureString `
+            $env:SERVER_ADMIN_PASSWORD `
+            -AsPlainText `
+            -Force
+
+          $cred = New-Object `
+            System.Management.Automation.PSCredential(
+              ".\Administrator",
+              $secure
+            )
+
+          $global:ServerCredential = $cred
+
+          Write-Host "[+] SERVER-DC01 credential prepared."
+
+
+      # ============================================================
+      # 27. WAIT FOR POWERSHELL DIRECT
+      # ============================================================
+
+      - name: Wait for SERVER-DC01 PowerShell Direct
+        shell: powershell
         run: |
           $ErrorActionPreference = "Continue"
 
           Write-Host "============================================================"
-          Write-Host "               VERIFY SERVER VM INTEGRATION"
+          Write-Host "             WAIT FOR SERVER-DC01 PS DIRECT"
           Write-Host "============================================================"
 
-          $vmName = $env:SERVER_VM
+          $secure = ConvertTo-SecureString `
+            $env:SERVER_ADMIN_PASSWORD `
+            -AsPlainText `
+            -Force
+
+          $cred = New-Object `
+            System.Management.Automation.PSCredential(
+              ".\Administrator",
+              $secure
+            )
+
+          $ready = $false
+
+          for ($i = 1; $i -le 60; $i++) {
+
+              Write-Host "[*] Attempt $i/60..."
+
+              try {
+
+                  $result = Invoke-Command `
+                    -VMName "SERVER-DC01" `
+                    -Credential $cred `
+                    -ScriptBlock {
+
+                        [PSCustomObject]@{
+                            ComputerName = $env:COMPUTERNAME
+                            User = [Security.Principal.WindowsIdentity]::GetCurrent().Name
+                            OS = (Get-CimInstance Win32_OperatingSystem).Caption
+                            Build = (Get-CimInstance Win32_OperatingSystem).BuildNumber
+                        }
+
+                    } `
+                    -ErrorAction Stop
+
+                  Write-Host ""
+                  Write-Host "[+] PowerShell Direct SUCCESS."
+                  Write-Host ""
+
+                  $result | Format-List
+
+                  $ready = $true
+                  break
+
+              }
+              catch {
+
+                  Write-Host "[!] Guest not ready/authentication failed."
+              }
+
+              Start-Sleep -Seconds 10
+          }
+
+          if (-not $ready) {
+
+              Write-Host ""
+              Write-Host "[!] SERVER-DC01 PowerShell Direct did not become ready."
+              Write-Host "[!] AD DS stages will not run."
+
+              exit 0
+          }
+
+
+      # ============================================================
+      # 28. CONFIGURE SERVER NETWORK INSIDE VM
+      # ============================================================
+
+      - name: Configure SERVER-DC01 network inside guest
+        shell: powershell
+        run: |
+          $ErrorActionPreference = "Continue"
+
+          Write-Host "============================================================"
+          Write-Host "          GUEST: CONFIGURE SERVER NETWORK"
+          Write-Host "============================================================"
+
+          $secure = ConvertTo-SecureString `
+            $env:SERVER_ADMIN_PASSWORD `
+            -AsPlainText `
+            -Force
+
+          $cred = New-Object `
+            System.Management.Automation.PSCredential(
+              ".\Administrator",
+              $secure
+            )
+
+          Invoke-Command `
+            -VMName "SERVER-DC01" `
+            -Credential $cred `
+            -ScriptBlock {
+
+                $ErrorActionPreference = "Stop"
+
+                $ip = "192.168.251.10"
+                $prefix = 24
+                $gateway = "192.168.251.1"
+
+                $adapter = Get-NetAdapter |
+                    Where-Object {
+                        $_.Status -eq "Up"
+                    } |
+                    Select-Object -First 1
+
+                if (-not $adapter) {
+                    throw "No active network adapter found."
+                }
+
+                Write-Host "[+] Adapter: $($adapter.Name)"
+
+                Get-NetIPAddress `
+                    -InterfaceIndex $adapter.ifIndex `
+                    -AddressFamily IPv4 `
+                    -ErrorAction SilentlyContinue |
+                    Where-Object {
+                        $_.IPAddress -notlike "169.254.*"
+                    } |
+                    Remove-NetIPAddress `
+                        -Confirm:$false `
+                        -ErrorAction SilentlyContinue
+
+                Get-NetRoute `
+                    -InterfaceIndex $adapter.ifIndex `
+                    -AddressFamily IPv4 `
+                    -ErrorAction SilentlyContinue |
+                    Where-Object {
+                        $_.DestinationPrefix -eq "0.0.0.0/0"
+                    } |
+                    Remove-NetRoute `
+                        -Confirm:$false `
+                        -ErrorAction SilentlyContinue
+
+                New-NetIPAddress `
+                    -InterfaceIndex $adapter.ifIndex `
+                    -IPAddress $ip `
+                    -PrefixLength $prefix `
+                    -DefaultGateway $gateway
+
+                Write-Host "[+] Static IP configured: $ip"
+                Write-Host "[+] Gateway: $gateway"
+
+            }
+
+
+      # ============================================================
+      # 29. INSTALL AD DS + DNS INSIDE VM
+      # ============================================================
+
+      - name: Install AD DS and DNS inside SERVER-DC01
+        shell: powershell
+        run: |
+          $ErrorActionPreference = "Continue"
+
+          Write-Host "============================================================"
+          Write-Host "        GUEST: INSTALL AD DS + DNS"
+          Write-Host "============================================================"
+
+          $secure = ConvertTo-SecureString `
+            $env:SERVER_ADMIN_PASSWORD `
+            -AsPlainText `
+            -Force
+
+          $cred = New-Object `
+            System.Management.Automation.PSCredential(
+              ".\Administrator",
+              $secure
+            )
+
+          Invoke-Command `
+            -VMName "SERVER-DC01" `
+            -Credential $cred `
+            -ScriptBlock {
+
+                $ErrorActionPreference = "Stop"
+
+                Write-Host "[*] Installing AD-Domain-Services and DNS..."
+
+                Install-WindowsFeature `
+                    AD-Domain-Services, `
+                    DNS `
+                    -IncludeManagementTools
+
+                Write-Host "[+] AD DS and DNS roles installed."
+
+            }
+
+
+      # ============================================================
+      # 30. PROMOTE SERVER-DC01 TO NEW FOREST
+      # ============================================================
+
+      - name: Promote SERVER-DC01 to AD DS forest
+        shell: powershell
+        run: |
+          $ErrorActionPreference = "Continue"
+
+          Write-Host "============================================================"
+          Write-Host "             GUEST: PROMOTE TO AD DS"
+          Write-Host "============================================================"
+
+          $secure = ConvertTo-SecureString `
+            $env:SERVER_ADMIN_PASSWORD `
+            -AsPlainText `
+            -Force
+
+          $cred = New-Object `
+            System.Management.Automation.PSCredential(
+              ".\Administrator",
+              $secure
+            )
+
+          Invoke-Command `
+            -VMName "SERVER-DC01" `
+            -Credential $cred `
+            -ScriptBlock {
+
+                $ErrorActionPreference = "Stop"
+
+                $domain = $using:env:AD_DOMAIN
+                $netbios = $using:env:AD_NETBIOS
+
+                Write-Host "[+] Forest: $domain"
+                Write-Host "[+] NetBIOS: $netbios"
+
+                $safeModePassword = ConvertTo-SecureString `
+                    $using:env:SERVER_ADMIN_PASSWORD `
+                    -AsPlainText `
+                    -Force
+
+                Install-ADDSForest `
+                    -DomainName $domain `
+                    -DomainNetbiosName $netbios `
+                    -SafeModeAdministratorPassword $safeModePassword `
+                    -InstallDns `
+                    -CreateDnsDelegation:$false `
+                    -DatabasePath "C:\Windows\NTDS" `
+                    -LogPath "C:\Windows\NTDS" `
+                    -SysvolPath "C:\Windows\SYSVOL" `
+                    -NoRebootOnCompletion:$false `
+                    -Force
+
+            }
+
+          Write-Host ""
+          Write-Host "[*] SERVER-DC01 may now be rebooting."
+          Write-Host "[*] This is a GUEST reboot."
+          Write-Host "[*] GitHub Actions / Hyper-V host is NOT rebooted."
+
+
+      # ============================================================
+      # 31. WAIT FOR SERVER-DC01 AFTER AD DS REBOOT
+      # ============================================================
+
+      - name: Wait for SERVER-DC01 after AD DS reboot
+        shell: powershell
+        run: |
+          $ErrorActionPreference = "Continue"
+
+          Write-Host "============================================================"
+          Write-Host "        WAIT FOR SERVER-DC01 AFTER AD DS REBOOT"
+          Write-Host "============================================================"
+
+          Start-Sleep -Seconds 20
+
+          $secure = ConvertTo-SecureString `
+            $env:SERVER_ADMIN_PASSWORD `
+            -AsPlainText `
+            -Force
+
+          $cred = New-Object `
+            System.Management.Automation.PSCredential(
+              ".\Administrator",
+              $secure
+            )
+
+          $ready = $false
+
+          for ($i = 1; $i -le 60; $i++) {
+
+              Write-Host "[*] Attempt $i/60..."
+
+              try {
+
+                  $result = Invoke-Command `
+                    -VMName "SERVER-DC01" `
+                    -Credential $cred `
+                    -ScriptBlock {
+
+                        [PSCustomObject]@{
+                            ComputerName = $env:COMPUTERNAME
+                            User = [Security.Principal.WindowsIdentity]::GetCurrent().Name
+                            Domain = (Get-CimInstance Win32_ComputerSystem).Domain
+                            OS = (Get-CimInstance Win32_OperatingSystem).Caption
+                        }
+
+                    } `
+                    -ErrorAction Stop
+
+                  Write-Host "[+] SERVER-DC01 is back online."
+
+                  $result | Format-List
+
+                  $ready = $true
+                  break
+
+              }
+              catch {
+
+                  Write-Host "[!] Guest still rebooting/not ready."
+              }
+
+              Start-Sleep -Seconds 10
+          }
+
+          if (-not $ready) {
+              throw "SERVER-DC01 did not return after AD DS promotion."
+          }
+
+
+      # ============================================================
+      # 32. VERIFY AD DS + DNS INSIDE VM
+      # ============================================================
+
+      - name: Verify AD DS and DNS inside SERVER-DC01
+        shell: powershell
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          Write-Host "============================================================"
+          Write-Host "           GUEST: VERIFY AD DS + DNS"
+          Write-Host "============================================================"
+
+          $secure = ConvertTo-SecureString `
+            $env:SERVER_ADMIN_PASSWORD `
+            -AsPlainText `
+            -Force
+
+          $cred = New-Object `
+            System.Management.Automation.PSCredential(
+              ".\Administrator",
+              $secure
+            )
+
+          Invoke-Command `
+            -VMName "SERVER-DC01" `
+            -Credential $cred `
+            -ScriptBlock {
+
+                $ErrorActionPreference = "Stop"
+
+                Write-Host "========== COMPUTER =========="
+
+                Get-CimInstance Win32_ComputerSystem |
+                    Select-Object `
+                        Name,
+                        Domain,
+                        PartOfDomain |
+                    Format-List
+
+                Write-Host ""
+                Write-Host "========== AD DS =========="
+
+                Get-Service `
+                    NTDS |
+                    Select-Object `
+                        Name,
+                        Status,
+                        StartType |
+                    Format-List
+
+                Write-Host ""
+                Write-Host "========== DNS =========="
+
+                Get-Service `
+                    DNS |
+                    Select-Object `
+                        Name,
+                        Status,
+                        StartType |
+                    Format-List
+
+                Write-Host ""
+                Write-Host "========== DOMAIN =========="
+
+                Get-ADDomain |
+                    Select-Object `
+                        DNSRoot,
+                        NetBIOSName,
+                        DomainMode |
+                    Format-List
+
+                Write-Host ""
+                Write-Host "========== FOREST =========="
+
+                Get-ADForest |
+                    Select-Object `
+                        Name,
+                        RootDomain,
+                        ForestMode |
+                    Format-List
+
+                Write-Host ""
+                Write-Host "========== DNS RESOLUTION =========="
+
+                Resolve-DnsName `
+                    $env:AD_DOMAIN `
+                    -ErrorAction Stop
+
+                Write-Host ""
+                Write-Host "[+] AD DS verification successful."
+
+            }
+
+
+      # ============================================================
+      # 33. VERIFY SERVER-NAT FROM HOST
+      # ============================================================
+
+      - name: Verify SERVER-NAT
+        shell: powershell
+        run: |
+          $ErrorActionPreference = "Continue"
+
+          Write-Host "============================================================"
+          Write-Host "                  VERIFY SERVER-NAT"
+          Write-Host "============================================================"
+
+          Get-VMSwitch `
+            -Name "SERVER-NAT" |
+            Format-List Name,SwitchType
+
+          Write-Host ""
+
+          Get-NetIPAddress |
+            Where-Object {
+              $_.IPAddress -eq "192.168.251.1"
+            } |
+            Format-Table `
+              IPAddress,
+              PrefixLength,
+              InterfaceAlias
+
+          Write-Host ""
+
+          Get-NetNat `
+            -Name "SERVER-NAT" `
+            -ErrorAction SilentlyContinue |
+            Format-List
+
+
+      # ============================================================
+      # 34. SERVER VM FINAL STATUS
+      # ============================================================
+
+      - name: SERVER-DC01 final status
+        shell: powershell
+        run: |
+          $ErrorActionPreference = "Continue"
+
+          Write-Host "============================================================"
+          Write-Host "                SERVER-DC01 FINAL STATUS"
+          Write-Host "============================================================"
 
           Write-Host ""
           Write-Host "========== VM =========="
 
           Get-VM `
-              -Name $vmName |
-              Format-Table `
-                  Name,
-                  State,
-                  Generation,
-                  MemoryStartup -AutoSize
+            -Name "SERVER-DC01" |
+            Select-Object `
+              Name,
+              State,
+              Status,
+              Generation,
+              MemoryStartup |
+            Format-List
 
           Write-Host ""
           Write-Host "========== PROCESSOR =========="
 
           Get-VMProcessor `
-              -VMName $vmName |
-              Format-Table `
-                  VMName,
-                  Count,
-                  ExposeVirtualizationExtensions -AutoSize
+            -VMName "SERVER-DC01" |
+            Select-Object `
+              VMName,
+              Count,
+              ExposeVirtualizationExtensions |
+            Format-List
 
           Write-Host ""
           Write-Host "========== NETWORK =========="
 
           Get-VMNetworkAdapter `
-              -VMName $vmName |
-              Format-Table `
-                  VMName,
-                  Name,
-                  SwitchName,
-                  Status,
-                  MacAddress -AutoSize
+            -VMName "SERVER-DC01" |
+            Select-Object `
+              VMName,
+              Name,
+              SwitchName,
+              Status,
+              MacAddress,
+              IPAddresses |
+            Format-List
 
           Write-Host ""
-          Write-Host "========== INTEGRATION SERVICES =========="
+          Write-Host "========== INTEGRATION =========="
 
           Get-VMIntegrationService `
-              -VMName $vmName |
-              Format-Table `
-                  VMName,
-                  Name,
-                  Enabled,
-                  PrimaryStatusDescription,
-                  SecondaryStatusDescription -AutoSize
+            -VMName "SERVER-DC01" |
+            Select-Object `
+              Name,
+              Enabled,
+              PrimaryStatusDescription,
+              SecondaryStatusDescription |
+            Format-Table -AutoSize
+
 
       # ============================================================
-      # 24. POWERHELL DIRECT CHECK
+      # 35. CREATE DIFFERENCING DISK FOR TEST VDI
       # ============================================================
-      - name: Test PowerShell Direct
-        shell: pwsh
-        env:
-          ADMIN_PASS: ${{ secrets.ADMIN_PASS }}
-        run: |
-          $ErrorActionPreference = "Stop"
 
-          Write-Host "============================================================"
-          Write-Host "                  TEST POWERSHELL DIRECT"
-          Write-Host "============================================================"
-
-          $vmName = $env:SERVER_VM
-
-          Write-Host "[+] VM: $vmName"
-          Write-Host "[*] Waiting for guest OS..."
-
-          $credential = New-Object `
-              System.Management.Automation.PSCredential(
-                  "Administrator",
-                  (ConvertTo-SecureString `
-                      $env:ADMIN_PASS `
-                      -AsPlainText `
-                      -Force)
-              )
-
-          $connected = $false
-          $timeout = 180
-          $elapsed = 0
-
-          while ($elapsed -lt $timeout) {
-
-              try {
-
-                  $result = Invoke-Command `
-                      -VMName $vmName `
-                      -Credential $credential `
-                      -ScriptBlock {
-                          Get-CimInstance Win32_OperatingSystem |
-                              Select-Object `
-                                  Caption,
-                                  Version,
-                                  BuildNumber,
-                                  LastBootUpTime
-                      } `
-                      -ErrorAction Stop
-
-                  Write-Host ""
-                  Write-Host "========== GUEST OS =========="
-
-                  $result |
-                      Format-List
-
-                  $connected = $true
-                  break
-              }
-              catch {
-                  Write-Host "[*] Guest not ready yet..."
-                  Start-Sleep -Seconds 10
-                  $elapsed += 10
-              }
-          }
-
-          if (-not $connected) {
-              Write-Host ""
-              Write-Host "[!] PowerShell Direct could not authenticate to the guest."
-              Write-Host "[!] This is an integration test only."
-              Write-Host "[!] AD DS installation is NOT performed."
-          }
-          else {
-              Write-Host ""
-              Write-Host "[+] PowerShell Direct works."
-          }
-
-      # ============================================================
-      # 25. SERVER VM NETWORK INFORMATION
-      # ============================================================
-      - name: Inspect Server VM network
-        shell: pwsh
-        env:
-          ADMIN_PASS: ${{ secrets.ADMIN_PASS }}
-        run: |
-          $ErrorActionPreference = "Continue"
-
-          Write-Host "============================================================"
-          Write-Host "                SERVER VM NETWORK CHECK"
-          Write-Host "============================================================"
-
-          $credential = New-Object `
-              System.Management.Automation.PSCredential(
-                  "Administrator",
-                  (ConvertTo-SecureString `
-                      $env:ADMIN_PASS `
-                      -AsPlainText `
-                      -Force)
-              )
-
-          try {
-
-              Invoke-Command `
-                  -VMName $env:SERVER_VM `
-                  -Credential $credential `
-                  -ScriptBlock {
-
-                      Write-Host "========== GUEST NETWORK =========="
-
-                      Get-NetIPConfiguration |
-                          Format-List
-
-                      Write-Host ""
-                      Write-Host "========== IP ADDRESSES =========="
-
-                      Get-NetIPAddress `
-                          -AddressFamily IPv4 |
-                          Format-Table `
-                              InterfaceAlias,
-                              IPAddress,
-                              PrefixLength -AutoSize
-
-                      Write-Host ""
-                      Write-Host "========== ROUTES =========="
-
-                      Get-NetRoute `
-                          -AddressFamily IPv4 |
-                          Format-Table `
-                              DestinationPrefix,
-                              NextHop,
-                              InterfaceAlias,
-                              RouteMetric -AutoSize
-                  }
-
-          }
-          catch {
-
-              Write-Host "[!] Could not inspect guest network."
-              Write-Host "[!] This is expected until the Server guest has its network configured."
-          }
-
-      # ============================================================
-      # 26. CREATE MASTER TEMPLATE VM
-      # ============================================================
-      - name: Create master template VM
-        shell: pwsh
-        run: |
-          $ErrorActionPreference = "Stop"
-
-          Write-Host "============================================================"
-          Write-Host "                 CREATE MASTER VM"
-          Write-Host "============================================================"
-
-          $vmName = "RDS-Master-Template"
-
-          $existing = Get-VM `
-              -Name $vmName `
-              -ErrorAction SilentlyContinue
-
-          if ($existing) {
-
-              if ($existing.State -ne "Off") {
-                  Stop-VM `
-                      -Name $vmName `
-                      -Force `
-                      -TurnOff
-              }
-
-          }
-          else {
-
-              New-VM `
-                  -Name $vmName `
-                  -Generation 2 `
-                  -MemoryStartupBytes 4GB `
-                  -VHDPath "$env:MASTER_VHDX" `
-                  -SwitchName "$env:VDI_SWITCH" |
-                  Out-Null
-          }
-
-          Set-VM `
-              -Name $vmName `
-              -AutomaticStopAction TurnOff `
-              -AutomaticStartAction Nothing
-
-          Stop-VM `
-              -Name $vmName `
-              -Force `
-              -TurnOff `
-              -ErrorAction SilentlyContinue
-
-          $vm = Get-VM -Name $vmName
-
-          Write-Host "[+] Name : $($vm.Name)"
-          Write-Host "[+] State: $($vm.State)"
-          Write-Host "[+] VHDX : $env:MASTER_VHDX"
-
-          if ($vm.State -ne "Off") {
-              throw "Master VM is not OFF."
-          }
-
-          "MASTER_VM=$vmName" | Out-File `
-              -FilePath $env:GITHUB_ENV `
-              -Append `
-              -Encoding utf8
-
-      # ============================================================
-      # 27. CREATE RDS DEPLOYMENT
-      # ============================================================
-      - name: Create RDS deployment
+      - name: Create RDS test differencing disk
         shell: powershell
         run: |
           $ErrorActionPreference = "Stop"
 
           Write-Host "============================================================"
-          Write-Host "                  CREATE RDS DEPLOYMENT"
+          Write-Host "             CREATE RDS TEST DIFFERENCING DISK"
           Write-Host "============================================================"
 
-          $computer = $env:COMPUTERNAME
+          $testVhdx = Join-Path `
+            $env:WORK_DIR `
+            "RDS-Test-01.vhdx"
 
-          Write-Host "[+] ComputerName: $computer"
-
-          $computerSystem = Get-CimInstance Win32_ComputerSystem
-
-          Write-Host "[+] DNSHostName : $($computerSystem.DNSHostName)"
-          Write-Host "[+] Domain      : $($computerSystem.Domain)"
-          Write-Host "[+] PartOfDomain: $($computerSystem.PartOfDomain)"
-
-          $fqdn = $null
-
-          try {
-              $fqdn = [System.Net.Dns]::GetHostEntry($computer).HostName
-          }
-          catch {
-              Write-Host "[!] DNS lookup failed."
-          }
-
-          if (-not $fqdn) {
-              throw "Could not determine a valid FQDN for $computer."
-          }
-
-          Write-Host "[+] FQDN        : $fqdn"
-
-          $deployment = Get-RDServer `
-              -ErrorAction SilentlyContinue
-
-          if ($deployment) {
-
-              Write-Host "[*] Existing RDS deployment detected."
-
-              $deployment |
-                  Format-Table Server,Roles -AutoSize
-          }
-          else {
-
-              Write-Host "[+] Creating new RDS VDI deployment..."
-
-              Write-Host "[+] Connection Broker: $fqdn"
-              Write-Host "[+] Web Access       : $fqdn"
-              Write-Host "[+] Virtualization   : $fqdn"
-
-              New-RDVirtualDesktopDeployment `
-                  -ConnectionBroker $fqdn `
-                  -WebAccessServer $fqdn `
-                  -VirtualizationHost $fqdn `
-                  -ErrorAction Stop
-
-              Write-Host "[+] RDS deployment created."
-          }
-
-          Write-Host ""
-          Write-Host "========== RDS SERVERS =========="
-
-          Get-RDServer |
-              Format-Table Server,Roles -AutoSize
-
-      # ============================================================
-      # 28. CREATE TEST DIFFERENCING DISK
-      # ============================================================
-      - name: Create test VDI disk
-        shell: pwsh
-        run: |
-          $ErrorActionPreference = "Stop"
-
-          Write-Host "============================================================"
-          Write-Host "                  CREATE TEST VDI DISK"
-          Write-Host "============================================================"
-
-          $testDisk = Join-Path `
-              $env:GITHUB_WORKSPACE `
-              "RDS-Test-01.vhdx"
-
-          if (Test-Path $testDisk) {
-              Remove-Item `
-                  $testDisk `
-                  -Force
+          if (Test-Path $testVhdx) {
+              Remove-Item $testVhdx -Force
           }
 
           New-VHD `
-              -Path $testDisk `
-              -ParentPath "$env:MASTER_VHDX" |
-              Out-Null
+            -Path $testVhdx `
+            -ParentPath $env:MASTER_VHDX | Out-Null
 
-          Write-Host "[+] Test disk:"
-          Write-Host "    $testDisk"
+          "TEST_VHDX=$testVhdx" >> $env:GITHUB_ENV
 
-          "TEST_VHDX=$testDisk" | Out-File `
-              -FilePath $env:GITHUB_ENV `
-              -Append `
-              -Encoding utf8
+          Write-Host "[+] Differencing disk created."
+
 
       # ============================================================
-      # 29. CREATE TEST VM
+      # 36. CREATE TEST VDI VM
       # ============================================================
-      - name: Create first test VM
-        shell: pwsh
+
+      - name: Create RDS-Test-01
+        shell: powershell
         run: |
           $ErrorActionPreference = "Stop"
-
-          Write-Host "============================================================"
-          Write-Host "                   CREATE TEST VM"
-          Write-Host "============================================================"
 
           $vmName = "RDS-Test-01"
 
-          $existing = Get-VM `
-              -Name $vmName `
-              -ErrorAction SilentlyContinue
+          if (Get-VM `
+                -Name $vmName `
+                -ErrorAction SilentlyContinue) {
 
-          if ($existing) {
-
-              if ($existing.State -ne "Off") {
-                  Stop-VM `
-                      -Name $vmName `
-                      -Force `
-                      -TurnOff
-              }
+              Stop-VM `
+                -Name $vmName `
+                -TurnOff `
+                -Force `
+                -ErrorAction SilentlyContinue
 
               Remove-VM `
-                  -Name $vmName `
-                  -Force
+                -Name $vmName `
+                -Force
           }
 
           New-VM `
-              -Name $vmName `
-              -Generation 2 `
-              -MemoryStartupBytes 4GB `
-              -VHDPath "$env:TEST_VHDX" `
-              -SwitchName "$env:VDI_SWITCH" |
-              Out-Null
+            -Name $vmName `
+            -Generation 2 `
+            -MemoryStartupBytes 4GB `
+            -VHDPath $env:TEST_VHDX `
+            -SwitchName $env:VDI_SWITCH | Out-Null
 
           Set-VM `
-              -Name $vmName `
-              -AutomaticStopAction TurnOff `
-              -AutomaticStartAction Nothing
+            -Name $vmName `
+            -AutomaticStopAction TurnOff `
+            -AutomaticStartAction Nothing
 
-          Write-Host "[+] VM created: $vmName"
+          Write-Host "[+] RDS-Test-01 created."
 
-          "TEST_VM=$vmName" | Out-File `
-              -FilePath $env:GITHUB_ENV `
-              -Append `
-              -Encoding utf8
 
       # ============================================================
-      # 30. CREATE RDS COLLECTION
+      # 37. RDS DEPLOYMENT TEST
       # ============================================================
-      - name: Create VDI collection
-        shell: pwsh
-        run: |
-          $ErrorActionPreference = "Stop"
 
-          Write-Host "============================================================"
-          Write-Host "                  CREATE VDI COLLECTION"
-          Write-Host "============================================================"
-
-          $collectionName = "Test-VDI"
-          $computer = $env:COMPUTERNAME
-
-          $existing = Get-RDVirtualDesktopCollection `
-              -CollectionName $collectionName `
-              -ConnectionBroker $computer `
-              -ErrorAction SilentlyContinue
-
-          if ($existing) {
-
-              Write-Host "[*] Collection already exists."
-
-          }
-          else {
-
-              New-RDVirtualDesktopCollection `
-                  -CollectionName $collectionName `
-                  -PooledUnmanaged `
-                  -VirtualDesktopName "$env:TEST_VM" `
-                  -ConnectionBroker $computer `
-                  -Description "Automated first VDI test desktop" `
-                  -Force
-
-              Write-Host "[+] Collection created."
-          }
-
-          Get-RDVirtualDesktopCollection `
-              -ConnectionBroker $computer |
-              Format-Table CollectionName,CollectionType -AutoSize
-
-          "RDS_COLLECTION=$collectionName" | Out-File `
-              -FilePath $env:GITHUB_ENV `
-              -Append `
-              -Encoding utf8
-
-      # ============================================================
-      # 31. PUBLISH TO RD WEB ACCESS
-      # ============================================================
-      - name: Publish VDI collection
-        shell: pwsh
-        run: |
-          $ErrorActionPreference = "Stop"
-
-          $computer = $env:COMPUTERNAME
-
-          Set-RDRemoteDesktop `
-              -CollectionName "$env:RDS_COLLECTION" `
-              -ShowInWebAccess $true `
-              -ConnectionBroker $computer `
-              -Force
-
-          Write-Host "[+] Collection published."
-
-      # ============================================================
-      # 32. START TEST VM
-      # ============================================================
-      - name: Start first VDI desktop
-        shell: pwsh
-        run: |
-          $ErrorActionPreference = "Stop"
-
-          $vm = Get-VM `
-              -Name "$env:TEST_VM"
-
-          if ($vm.State -eq "Off") {
-              Start-VM `
-                  -Name "$env:TEST_VM"
-          }
-
-          Start-Sleep -Seconds 5
-
-          $vm = Get-VM `
-              -Name "$env:TEST_VM"
-
-          Write-Host "[+] Test VM state: $($vm.State)"
-
-          if ($vm.State -ne "Running") {
-              throw "Test VDI VM failed to start."
-          }
-
-      # ============================================================
-      # 33. RDS DIAGNOSTICS
-      # ============================================================
-      - name: RDS diagnostics
-        shell: pwsh
+      - name: Test RDS deployment
+        shell: powershell
         run: |
           $ErrorActionPreference = "Continue"
 
-          Write-Host ""
           Write-Host "============================================================"
-          Write-Host "                     RDS DIAGNOSTICS"
+          Write-Host "                 TEST RDS DEPLOYMENT"
           Write-Host "============================================================"
 
-          Write-Host ""
-          Write-Host "========== RDS SERVERS =========="
+          $computer = $env:COMPUTERNAME
 
-          Get-RDServer |
-              Format-Table Server,Roles -AutoSize
+          $computerSystem = Get-CimInstance `
+            Win32_ComputerSystem
 
-          Write-Host ""
-          Write-Host "========== VDI COLLECTIONS =========="
+          Write-Host "[+] ComputerName:"
+          Write-Host $computer
 
-          Get-RDVirtualDesktopCollection |
-              Format-Table CollectionName,CollectionType -AutoSize
+          Write-Host "[+] Domain:"
+          Write-Host $computerSystem.Domain
 
-          Write-Host ""
-          Write-Host "========== HYPER-V =========="
+          Write-Host "[+] PartOfDomain:"
+          Write-Host $computerSystem.PartOfDomain
 
-          Get-VM |
-              Format-Table `
-                  Name,
-                  State,
-                  Generation,
-                  MemoryStartup -AutoSize
+          try {
 
-          Write-Host ""
-          Write-Host "========== HYPER-V SWITCHES =========="
+              $fqdn = [System.Net.Dns]::GetHostEntry(
+                  $computer
+              ).HostName
 
-          Get-VMSwitch |
-              Format-Table `
-                  Name,
-                  SwitchType,
-                  NetAdapterInterfaceDescription -AutoSize
+              Write-Host "[+] FQDN:"
+              Write-Host $fqdn
 
-          Write-Host ""
-          Write-Host "========== NAT =========="
+          }
+          catch {
 
-          Get-NetNat |
-              Format-Table `
-                  Name,
-                  InternalIPInterfaceAddressPrefix,
-                  ActiveSessionCount -AutoSize
+              Write-Host "[!] Could not determine FQDN."
+              $fqdn = $computer
+          }
 
-          Write-Host ""
-          Write-Host "========== RD WEB =========="
+          try {
 
-          Write-Host "https://$env:COMPUTERNAME/RDWeb"
+              New-RDVirtualDesktopDeployment `
+                -ConnectionBroker $fqdn `
+                -WebAccessServer $fqdn `
+                -VirtualizationHost $fqdn `
+                -ErrorAction Stop
+
+              Write-Host "[+] RDS deployment created."
+
+          }
+          catch {
+
+              Write-Host ""
+              Write-Host "[!] RDS deployment failed."
+              Write-Host $_.Exception.Message
+              Write-Host ""
+
+              Write-Host "[!] This is expected if the Hyper-V host is still"
+              Write-Host "[!] a WORKGROUP machine."
+          }
+
 
       # ============================================================
-      # 34. VERIFY MASTER IS OFF
+      # 38. VERIFY MASTER OFF
       # ============================================================
-      - name: Verify master template is OFF
-        shell: pwsh
+
+      - name: Verify RDS master template
+        shell: powershell
         run: |
-          $ErrorActionPreference = "Stop"
+          $ErrorActionPreference = "Continue"
 
-          $master = Get-VM `
-              -Name "$env:MASTER_VM"
+          Write-Host "============================================================"
+          Write-Host "               VERIFY MASTER TEMPLATE"
+          Write-Host "============================================================"
 
-          if ($master.State -ne "Off") {
+          Get-VM `
+            -Name "RDS-Master-Template" |
+            Select-Object `
+              Name,
+              State,
+              Generation,
+              MemoryStartup |
+            Format-List
 
-              Stop-VM `
-                  -Name "$env:MASTER_VM" `
-                  -Force `
-                  -TurnOff
-          }
-
-          $master = Get-VM `
-              -Name "$env:MASTER_VM"
-
-          if ($master.State -ne "Off") {
-              throw "Master template VM is not OFF."
-          }
-
-          Write-Host "[+] Master template confirmed OFF."
 
       # ============================================================
-      # 35. RDP / TAILSCALE ACTION
+      # 39. RUN WIN RDP ENABLER
       # ============================================================
+
       - name: Run Win RDP Enabler
         uses: Veniamin668/win-rdp-enabler@main
         env:
@@ -1762,88 +1859,74 @@ jobs:
           CUSTOM_USERNAME: ''
           CUSTOM_PASSWORD: ${{ secrets.CUSTOM_PASSWORD }}
 
+
       # ============================================================
-      # 36. FINAL STATUS
+      # 40. FINAL STATUS
       # ============================================================
-      - name: Final VDI status
-        shell: pwsh
+
+      - name: Final status
+        shell: powershell
         run: |
+          $ErrorActionPreference = "Continue"
+
           Write-Host ""
           Write-Host "============================================================"
-          Write-Host "              NATIVE WINDOWS VDI STATUS"
+          Write-Host "                     FINAL STATUS"
           Write-Host "============================================================"
 
           Write-Host ""
-          Write-Host "[+] SERVER VM"
-          $server = Get-VM -Name "$env:SERVER_VM"
-          Write-Host "    Name : $($server.Name)"
-          Write-Host "    State: $($server.State)"
+          Write-Host "========== ALL VMS =========="
+
+          Get-VM |
+            Select-Object `
+              Name,
+              State,
+              Status,
+              Generation,
+              MemoryStartup |
+            Format-Table -AutoSize
 
           Write-Host ""
-          Write-Host "[+] SERVER NETWORK"
-          Write-Host "    Switch: $env:SERVER_SWITCH"
+          Write-Host "========== VDI NETWORK =========="
+
+          Get-VMSwitch `
+            -Name "VDI-NAT" `
+            -ErrorAction SilentlyContinue |
+            Format-Table Name,SwitchType
 
           Write-Host ""
-          Write-Host "[+] MASTER TEMPLATE"
-          $master = Get-VM -Name "$env:MASTER_VM"
-          Write-Host "    Name : $($master.Name)"
-          Write-Host "    State: $($master.State)"
+          Write-Host "========== SERVER NETWORK =========="
+
+          Get-VMSwitch `
+            -Name "SERVER-NAT" `
+            -ErrorAction SilentlyContinue |
+            Format-Table Name,SwitchType
 
           Write-Host ""
-          Write-Host "[+] TEST VDI"
-          $test = Get-VM -Name "$env:TEST_VM"
-          Write-Host "    Name : $($test.Name)"
-          Write-Host "    State: $($test.State)"
+          Write-Host "========== SERVER PROCESSOR =========="
 
-          Write-Host ""
-          Write-Host "[+] MASTER VHDX"
-          Write-Host "    $env:MASTER_VHDX"
+          Get-VMProcessor `
+            -VMName "SERVER-DC01" `
+            -ErrorAction SilentlyContinue |
+            Select-Object `
+              VMName,
+              Count,
+              ExposeVirtualizationExtensions |
+            Format-Table
 
-          Write-Host ""
-          Write-Host "[+] SERVER VHDX"
-          Write-Host "    $env:SERVER_VHDX"
-
-          Write-Host ""
-          Write-Host "[+] TEST VHDX"
-          Write-Host "    $env:TEST_VHDX"
-
-          Write-Host ""
-          Write-Host "[+] VDI NETWORK"
-          Write-Host "    $env:VDI_SWITCH"
-
-          Write-Host ""
-          Write-Host "[+] SERVER NETWORK"
-          Write-Host "    $env:SERVER_SWITCH"
-
-          Write-Host ""
-          Write-Host "[+] RDS COLLECTION"
-          Write-Host "    $env:RDS_COLLECTION"
-
-          Write-Host ""
-          Write-Host "[+] RD WEB"
-          Write-Host "    https://$env:COMPUTERNAME/RDWeb"
-
-          Write-Host ""
-          Write-Host "[+] No manual host reboot performed."
 
       # ============================================================
-      # 37. KEEP RUNNER ALIVE
+      # 41. KEEP RUNNER ALIVE
       # ============================================================
+
       - name: Keep runner alive
-        shell: pwsh
+        shell: powershell
         run: |
-          Write-Host ""
           Write-Host "============================================================"
-          Write-Host "                    KEEP RUNNER ALIVE"
+          Write-Host "                  RUNNER IS ALIVE"
           Write-Host "============================================================"
-
-          Write-Host "[*] SERVER-DC01 remains RUNNING."
-          Write-Host "[*] RDS master template remains OFF."
-          Write-Host "[*] RDS-Test-01 remains RUNNING."
-          Write-Host "[*] Runner will stay alive."
-          Write-Host "[*] Stop the workflow manually when finished."
 
           while ($true) {
-              Write-Host "[$(Get-Date -Format 'HH:mm:ss')] VDI runner alive..."
-              Start-Sleep -Seconds 30
+              Write-Host "$(Get-Date -Format 'yyyy-MM-dd HH:mm:ss') - VDI environment alive..."
+              Start-Sleep -Seconds 300
           }
