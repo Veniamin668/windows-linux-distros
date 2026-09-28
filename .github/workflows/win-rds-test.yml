@@ -1,4 +1,4 @@
-name: Deploy Windows Native VDI
+name: Deploy Windows Native VDI testing
 
 on:
   workflow_dispatch:
@@ -79,6 +79,9 @@ jobs:
       # CHECK WORKSPACE / AUTOUNATTEND
       # ============================================================
 
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        
       - name: Check workspace
         shell: pwsh
         run: |
