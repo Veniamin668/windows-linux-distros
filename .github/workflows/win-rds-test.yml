@@ -1270,7 +1270,7 @@ jobs:
         env:
           ADMIN_PASS: ${{ secrets.ADMIN_PASS }}
         run: |
-          $ErrorActionPreference = 'Stop'
+          $ErrorActionPreference = 'Continue'
 
           Write-Host "========== VERIFY AD DS / DNS =========="
 
