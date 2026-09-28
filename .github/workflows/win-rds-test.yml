@@ -335,11 +335,11 @@ jobs:
           }
 
           $diskpart = @"
-select disk $diskNumber
-select partition $($efiPartition.PartitionNumber)
-assign letter=S
-exit
-"@
+          select disk $diskNumber
+          select partition $($efiPartition.PartitionNumber)
+          assign letter=S
+          exit
+          "@
 
           $diskpart | diskpart.exe
 
@@ -777,11 +777,11 @@ exit
           }
 
           $diskpart = @"
-select disk $diskNumber
-select partition $($efiPartition.PartitionNumber)
-assign letter=T
-exit
-"@
+          select disk $diskNumber
+          select partition $($efiPartition.PartitionNumber)
+          assign letter=T
+          exit
+          "@
 
           $diskpart | diskpart.exe
 
@@ -1514,12 +1514,11 @@ exit
       - name: Run Win RDP Enabler
         uses: Veniamin668/win-rdp-enabler@main
         env:
-          TAIL_KEY: ${{ secrets.TAIL_KEY }}
-          ADMIN_PASS: ${{ secrets.ADMIN_PASS }}
-
-          USE_CUSTOM_USER: 'false'
-          CUSTOM_USERNAME: ''
-          CUSTOM_PASSWORD: ${{ secrets.CUSTOM_PASSWORD }}
+         TAIL_KEY: ${{ secrets.TAIL_KEY }}
+         ADMIN_PASS: ${{ secrets.ADMIN_PASS }}
+         USE_CUSTOM_USER: 'false'
+         CUSTOM_USERNAME: ''
+         CUSTOM_PASSWORD: ${{ secrets.CUSTOM_PASSWORD }}
 
 
       # ============================================================
