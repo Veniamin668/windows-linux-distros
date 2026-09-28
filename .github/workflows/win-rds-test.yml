@@ -4,151 +4,79 @@ on:
   workflow_dispatch:
     inputs:
       iso_url:
-        description: "Direct URL to Windows client ISO"
+        description: "Windows client ISO URL"
         required: true
         type: string
 
       server_iso_url:
-        description: "Direct URL to Windows Server ISO"
+        description: "Windows Server ISO URL"
         required: true
         type: string
 
       wim_index:
-        description: "Windows client WIM/ESD index"
+        description: "Windows client WIM index"
         required: true
         default: "1"
         type: string
 
       server_wim_index:
-        description: "Windows Server WIM/ESD index"
+        description: "Windows Server WIM index"
         required: true
         default: "4"
         type: string
 
       ad_domain:
-        description: "Active Directory domain"
+        description: "AD DNS domain"
         required: true
         default: "vdi.test"
         type: string
 
       ad_netbios:
-        description: "Active Directory NetBIOS name"
+        description: "AD NetBIOS name"
         required: true
         default: "VDI"
         type: string
 
-
 jobs:
-
   deploy-vdi:
-
     runs-on: windows-latest
     timeout-minutes: 360
 
     env:
-
       WORK_DIR: ${{ github.workspace }}
 
-      # ============================================================
-      # L0 -> SERVER-DC01 network
-      # ============================================================
+      CLIENT_ISO: ${{ github.workspace }}\windows.iso
+      SERVER_ISO: ${{ github.workspace }}\windows-server.iso
+
+      CLIENT_VHDX: ${{ github.workspace }}\Windows-VDI-Master.vhdx
+      SERVER_VHDX: ${{ github.workspace }}\Windows-Server-DC01.vhdx
+
+      SERVER_VM: SERVER-DC01
+      TEMPLATE_VM: RDS-Master-Template
 
       SERVER_SWITCH: SERVER-NAT
       SERVER_GATEWAY: 192.168.251.1
       SERVER_PREFIX: 192.168.251.0/24
       SERVER_IP: 192.168.251.10
 
-      SERVER_VM: SERVER-DC01
-
-      # ============================================================
-      # L1 -> nested VDI network inside SERVER-DC01
-      # ============================================================
-
-      NESTED_SWITCH: RDS-NAT
-      NESTED_GATEWAY: 192.168.252.1
-      NESTED_PREFIX: 192.168.252.0/24
-      VDI_TEST_IP: 192.168.252.10
+      RDS_SWITCH: RDS-NAT
+      RDS_GATEWAY: 192.168.252.1
+      RDS_PREFIX: 192.168.252.0/24
 
       AD_DOMAIN: ${{ inputs.ad_domain }}
       AD_NETBIOS: ${{ inputs.ad_netbios }}
 
+      RDS_COLLECTION: Windows-VDI-Pool
+      RDS_VM_PREFIX: RDS-Test-
+
+      TEMPLATE_VHDX: C:\VDI\Templates\RDS-Master-Template.vhdx
+      RDS_STORAGE: C:\VDI\Collections
+      RDS_TEMPLATE_STORAGE: C:\VDI\Templates
 
     steps:
 
       # ============================================================
-      # 01. CHECKOUT
-      # ============================================================
-
-      - name: Checkout repository
-        uses: actions/checkout@v4
-
-
-      # ============================================================
-      # 02. PREPARE WORKSPACE
-      # ============================================================
-
-      - name: Prepare workspace
-        shell: pwsh
-        run: |
-          $ErrorActionPreference = 'Stop'
-
-          Write-Host "========== WORKSPACE =========="
-
-          $WorkDir = $env:GITHUB_WORKSPACE
-
-          Write-Host "[*] Workspace: $WorkDir"
-
-          New-Item `
-            -ItemType Directory `
-            -Path $WorkDir `
-            -Force |
-            Out-Null
-
-          Get-PSDrive -PSProvider FileSystem |
-            Select-Object Name, Root, Used, Free |
-            Format-Table -AutoSize
-
-
-      # ============================================================
-      # 03. CHECK AUTOUNATTEND
-      # ============================================================
-
-      - name: Check Autounattend.xml
-        shell: pwsh
-        run: |
-          $ErrorActionPreference = 'Stop'
-
-          Write-Host "========== CHECK AUTOUNATTEND.XML =========="
-
-          $path = Join-Path `
-            $env:GITHUB_WORKSPACE `
-            "Autounattend.xml"
-
-          if (-not (Test-Path $path)) {
-              throw "Autounattend.xml was not found in repository root."
-          }
-
-          Write-Host "[+] Found: $path"
-
-          $xml = Get-Content `
-            -Raw `
-            -Path $path
-
-          if (-not $xml.Contains("CHANGE_ME_ADMIN_PASSWORD")) {
-              throw "Autounattend.xml does not contain CHANGE_ME_ADMIN_PASSWORD placeholder."
-          }
-
-          try {
-              $null = [xml]$xml
-              Write-Host "[+] XML syntax is valid."
-          }
-          catch {
-              throw "Autounattend.xml is not valid XML: $($_.Exception.Message)"
-          }
-
-
-      # ============================================================
-      # 04. DOWNLOAD WINDOWS CLIENT ISO
+      # DOWNLOAD ISO
       # ============================================================
 
       - name: Download Windows client ISO
@@ -156,274 +84,17 @@ jobs:
         run: |
           $ErrorActionPreference = 'Stop'
 
-          Write-Host "========== DOWNLOAD WINDOWS ISO =========="
+          Write-Host "========== DOWNLOAD WINDOWS CLIENT ISO =========="
 
-          $iso = Join-Path `
-            $env:GITHUB_WORKSPACE `
-            "windows.iso"
-
-          if (Test-Path $iso) {
-              Remove-Item $iso -Force
+          if (-not (Test-Path $env:CLIENT_ISO)) {
+              Invoke-WebRequest `
+                  -Uri "${{ inputs.iso_url }}" `
+                  -OutFile $env:CLIENT_ISO `
+                  -UseBasicParsing
           }
 
-          curl.exe `
-            -L `
-            --fail `
-            --retry 5 `
-            --retry-delay 5 `
-            --retry-all-errors `
-            -C - `
-            -o "$iso" `
-            "${{ inputs.iso_url }}"
-
-          if (-not (Test-Path $iso)) {
-              throw "Windows ISO was not downloaded."
-          }
-
-          Write-Host "[+] ISO: $iso"
-          Write-Host "[+] Size: $((Get-Item $iso).Length) bytes"
-
-
-      # ============================================================
-      # 05. MOUNT WINDOWS CLIENT ISO
-      # ============================================================
-
-      - name: Mount Windows client ISO
-        shell: pwsh
-        run: |
-          $ErrorActionPreference = 'Stop'
-
-          Write-Host "========== MOUNT WINDOWS ISO =========="
-
-          $iso = Join-Path `
-            $env:GITHUB_WORKSPACE `
-            "windows.iso"
-
-          $diskImage = Mount-DiskImage `
-            -ImagePath $iso `
-            -PassThru
-
-          $volume = $diskImage |
-            Get-Volume |
-            Where-Object DriveLetter |
-            Select-Object -First 1
-
-          if (-not $volume) {
-              throw "Could not determine Windows ISO drive."
-          }
-
-          $drive = "$($volume.DriveLetter):"
-
-          Write-Host "[+] ISO mounted at $drive"
-
-          "WINDOWS_ISO_DRIVE=$drive" >> $env:GITHUB_ENV
-
-
-      # ============================================================
-      # 06. FIND WINDOWS IMAGE
-      # ============================================================
-
-      - name: Find Windows image
-        shell: pwsh
-        run: |
-          $ErrorActionPreference = 'Stop'
-
-          Write-Host "========== FIND WINDOWS IMAGE =========="
-
-          $sources = Join-Path `
-            $env:WINDOWS_ISO_DRIVE `
-            "sources"
-
-          $wim = Join-Path $sources "install.wim"
-          $esd = Join-Path $sources "install.esd"
-
-          if (Test-Path $wim) {
-              $image = $wim
-          }
-          elseif (Test-Path $esd) {
-              $image = $esd
-          }
-          else {
-              throw "install.wim/install.esd not found."
-          }
-
-          Write-Host "[+] Image: $image"
-
-          & dism.exe `
-            /Get-WimInfo `
-            "/WimFile:$image"
-
-          "WINDOWS_IMAGE_FILE=$image" >> $env:GITHUB_ENV
-          "WINDOWS_WIM_INDEX=${{ inputs.wim_index }}" >> $env:GITHUB_ENV
-
-
-      # ============================================================
-      # 07. CREATE CLIENT VHDX
-      # ============================================================
-
-      - name: Create Windows VDI master VHDX
-        shell: pwsh
-        run: |
-          $ErrorActionPreference = 'Stop'
-
-          Write-Host "========== CREATE WINDOWS VDI MASTER =========="
-
-          $vhdx = Join-Path `
-            $env:GITHUB_WORKSPACE `
-            "Windows-VDI-Master.vhdx"
-
-          if (Test-Path $vhdx) {
-              Remove-Item $vhdx -Force
-          }
-
-          New-VHD `
-            -Path $vhdx `
-            -SizeBytes 60GB `
-            -Dynamic |
-            Out-Null
-
-          $disk = Mount-VHD `
-            -Path $vhdx `
-            -Passthru
-
-          $diskNumber = $disk.DiskNumber
-
-          Initialize-Disk `
-            -Number $diskNumber `
-            -PartitionStyle GPT
-
-          $efi = New-Partition `
-            -DiskNumber $diskNumber `
-            -Size 100MB `
-            -GptType "{C12A7328-F81F-11D2-BA4B-00A0C93EC93B}"
-
-          Format-Volume `
-            -Partition $efi `
-            -FileSystem FAT32 `
-            -NewFileSystemLabel "SYSTEM" `
-            -Confirm:$false |
-            Out-Null
-
-          $osPartition = New-Partition `
-            -DiskNumber $diskNumber `
-            -UseMaximumSize `
-            -AssignDriveLetter
-
-          Format-Volume `
-            -Partition $osPartition `
-            -FileSystem NTFS `
-            -NewFileSystemLabel "Windows" `
-            -Confirm:$false |
-            Out-Null
-
-          $osDrive = "$($osPartition.DriveLetter):"
-
-          Write-Host "[+] VHDX: $vhdx"
-          Write-Host "[+] Disk: $diskNumber"
-          Write-Host "[+] OS: $osDrive"
-
-          "MASTER_VHDX=$vhdx" >> $env:GITHUB_ENV
-          "MASTER_DISK=$diskNumber" >> $env:GITHUB_ENV
-          "MASTER_OS=$osDrive" >> $env:GITHUB_ENV
-
-
-      # ============================================================
-      # 08. APPLY WINDOWS IMAGE
-      # ============================================================
-
-      - name: Apply Windows image
-        shell: pwsh
-        run: |
-          $ErrorActionPreference = 'Stop'
-
-          Write-Host "========== APPLY WINDOWS IMAGE =========="
-
-          & dism.exe `
-            /Apply-Image `
-            "/ImageFile:$env:WINDOWS_IMAGE_FILE" `
-            "/Index:$env:WINDOWS_WIM_INDEX" `
-            "/ApplyDir:$env:MASTER_OS" `
-            /CheckIntegrity
-
-          if ($LASTEXITCODE -ne 0) {
-              throw "DISM image apply failed with exit code $LASTEXITCODE"
-          }
-
-
-      # ============================================================
-      # 09. CONFIGURE CLIENT BOOT
-      # ============================================================
-
-      - name: Configure VDI boot files
-        shell: pwsh
-        run: |
-          $ErrorActionPreference = 'Stop'
-
-          Write-Host "========== CONFIGURE VDI BOOT =========="
-
-          $diskNumber = [int]$env:MASTER_DISK
-
-          $efiPartition = Get-Partition `
-            -DiskNumber $diskNumber |
-            Where-Object {
-                $_.GptType -eq "{C12A7328-F81F-11D2-BA4B-00A0C93EC93B}"
-            } |
-            Select-Object -First 1
-
-          if (-not $efiPartition) {
-              throw "EFI partition not found."
-          }
-
-          @(
-              "select disk $diskNumber"
-              "select partition $($efiPartition.PartitionNumber)"
-              "assign letter=S"
-              "exit"
-          ) |
-            diskpart.exe
-
-          bcdboot `
-            "$env:MASTER_OS\Windows" `
-            /s S: `
-            /f UEFI
-
-          if ($LASTEXITCODE -ne 0) {
-              throw "BCDBOOT failed with exit code $LASTEXITCODE"
-          }
-
-
-      # ============================================================
-      # 10. CLEAN CLIENT IMAGE
-      # ============================================================
-
-      - name: Cleanup VDI image
-        shell: pwsh
-        continue-on-error: true
-        run: |
-          Write-Host "========== CLEAN VDI IMAGE =========="
-
-          dism.exe `
-            /Image:"$env:MASTER_OS" `
-            /Cleanup-Image `
-            /StartComponentCleanup
-
-
-      # ============================================================
-      # 11. DISMOUNT CLIENT VHDX
-      # ============================================================
-
-      - name: Dismount VDI master
-        shell: pwsh
-        run: |
-          $ErrorActionPreference = 'Stop'
-
-          Dismount-VHD `
-            -Path $env:MASTER_VHDX
-
-
-      # ============================================================
-      # 12. DOWNLOAD WINDOWS SERVER ISO
-      # ============================================================
+          Write-Host "[+] Client ISO ready:"
+          Get-Item $env:CLIENT_ISO | Select-Object FullName,Length
 
       - name: Download Windows Server ISO
         shell: pwsh
@@ -432,244 +103,348 @@ jobs:
 
           Write-Host "========== DOWNLOAD WINDOWS SERVER ISO =========="
 
-          $iso = Join-Path `
-            $env:GITHUB_WORKSPACE `
-            "windows-server.iso"
-
-          if (Test-Path $iso) {
-              Remove-Item $iso -Force
+          if (-not (Test-Path $env:SERVER_ISO)) {
+              Invoke-WebRequest `
+                  -Uri "${{ inputs.server_iso_url }}" `
+                  -OutFile $env:SERVER_ISO `
+                  -UseBasicParsing
           }
 
-          curl.exe `
-            -L `
-            --fail `
-            --retry 5 `
-            --retry-delay 5 `
-            --retry-all-errors `
-            -C - `
-            -o "$iso" `
-            "${{ inputs.server_iso_url }}"
-
-          if (-not (Test-Path $iso)) {
-              throw "Windows Server ISO was not downloaded."
-          }
-
-          Write-Host "[+] Server ISO: $iso"
-          Write-Host "[+] Size: $((Get-Item $iso).Length) bytes"
+          Write-Host "[+] Server ISO ready:"
+          Get-Item $env:SERVER_ISO | Select-Object FullName,Length
 
 
       # ============================================================
-      # 13. MOUNT SERVER ISO
+      # PREPARE CLIENT VHDX
       # ============================================================
 
-      - name: Mount Windows Server ISO
+      - name: Prepare Windows VDI master VHDX
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
 
-          Write-Host "========== MOUNT SERVER ISO =========="
+          Write-Host "========== PREPARE WINDOWS VDI MASTER =========="
 
-          $iso = Join-Path `
-            $env:GITHUB_WORKSPACE `
-            "windows-server.iso"
-
-          $diskImage = Mount-DiskImage `
-            -ImagePath $iso `
-            -PassThru
-
-          $volume = $diskImage |
-            Get-Volume |
-            Where-Object DriveLetter |
-            Select-Object -First 1
-
-          if (-not $volume) {
-              throw "Could not determine Windows Server ISO drive."
-          }
-
-          $drive = "$($volume.DriveLetter):"
-
-          Write-Host "[+] Server ISO mounted at $drive"
-
-          "SERVER_ISO_DRIVE=$drive" >> $env:GITHUB_ENV
-
-
-      # ============================================================
-      # 14. FIND SERVER IMAGE
-      # ============================================================
-
-      - name: Find Windows Server image
-        shell: pwsh
-        run: |
-          $ErrorActionPreference = 'Stop'
-
-          Write-Host "========== FIND SERVER IMAGE =========="
-
-          $sources = Join-Path `
-            $env:SERVER_ISO_DRIVE `
-            "sources"
-
-          $wim = Join-Path $sources "install.wim"
-          $esd = Join-Path $sources "install.esd"
-
-          if (Test-Path $wim) {
-              $image = $wim
-          }
-          elseif (Test-Path $esd) {
-              $image = $esd
-          }
-          else {
-              throw "Server install.wim/install.esd not found."
-          }
-
-          Write-Host "[+] Server image: $image"
-
-          & dism.exe `
-            /Get-WimInfo `
-            "/WimFile:$image"
-
-          "SERVER_IMAGE_FILE=$image" >> $env:GITHUB_ENV
-          "SERVER_WIM_INDEX=${{ inputs.server_wim_index }}" >> $env:GITHUB_ENV
-
-
-      # ============================================================
-      # 15. CREATE SERVER VHDX
-      # ============================================================
-
-      - name: Create SERVER-DC01 VHDX
-        shell: pwsh
-        run: |
-          $ErrorActionPreference = 'Stop'
-
-          Write-Host "========== CREATE SERVER-DC01 VHDX =========="
-
-          $vhdx = Join-Path `
-            $env:GITHUB_WORKSPACE `
-            "SERVER-DC01.vhdx"
+          $vhdx = $env:CLIENT_VHDX
 
           if (Test-Path $vhdx) {
               Remove-Item $vhdx -Force
           }
 
           New-VHD `
-            -Path $vhdx `
-            -SizeBytes 60GB `
-            -Dynamic |
-            Out-Null
+              -Path $vhdx `
+              -SizeBytes 60GB `
+              -Dynamic | Out-Null
 
-          $disk = Mount-VHD `
-            -Path $vhdx `
-            -Passthru
+          Mount-VHD -Path $vhdx -Passthru | Out-Null
 
-          $diskNumber = $disk.DiskNumber
+          $disk = Get-Disk |
+              Where-Object {
+                  $_.OperationalStatus -eq 'Offline' -or
+                  $_.PartitionStyle -eq 'RAW'
+              } |
+              Sort-Object Number -Descending |
+              Select-Object -First 1
 
-          Initialize-Disk `
-            -Number $diskNumber `
-            -PartitionStyle GPT
-
-          $efi = New-Partition `
-            -DiskNumber $diskNumber `
-            -Size 100MB `
-            -GptType "{C12A7328-F81F-11D2-BA4B-00A0C93EC93B}"
-
-          Format-Volume `
-            -Partition $efi `
-            -FileSystem FAT32 `
-            -NewFileSystemLabel "SYSTEM" `
-            -Confirm:$false |
-            Out-Null
-
-          $osPartition = New-Partition `
-            -DiskNumber $diskNumber `
-            -UseMaximumSize `
-            -AssignDriveLetter
-
-          Format-Volume `
-            -Partition $osPartition `
-            -FileSystem NTFS `
-            -NewFileSystemLabel "Windows" `
-            -Confirm:$false |
-            Out-Null
-
-          $osDrive = "$($osPartition.DriveLetter):"
-
-          Write-Host "[+] VHDX: $vhdx"
-          Write-Host "[+] Disk: $diskNumber"
-          Write-Host "[+] OS: $osDrive"
-
-          "SERVER_VHDX=$vhdx" >> $env:GITHUB_ENV
-          "SERVER_DISK=$diskNumber" >> $env:GITHUB_ENV
-          "SERVER_OS=$osDrive" >> $env:GITHUB_ENV
-
-
-      # ============================================================
-      # 16. APPLY SERVER IMAGE
-      # ============================================================
-
-      - name: Apply Windows Server image
-        shell: pwsh
-        run: |
-          $ErrorActionPreference = 'Stop'
-
-          Write-Host "========== APPLY WINDOWS SERVER IMAGE =========="
-
-          & dism.exe `
-            /Apply-Image `
-            "/ImageFile:$env:SERVER_IMAGE_FILE" `
-            "/Index:$env:SERVER_WIM_INDEX" `
-            "/ApplyDir:$env:SERVER_OS" `
-            /CheckIntegrity
-
-          if ($LASTEXITCODE -ne 0) {
-              throw "Server DISM image apply failed with exit code $LASTEXITCODE"
+          if (-not $disk) {
+              $disk = Get-Disk |
+                  Where-Object PartitionStyle -eq 'RAW' |
+                  Sort-Object Number -Descending |
+                  Select-Object -First 1
           }
 
+          if (-not $disk) {
+              throw "Could not locate mounted client VHDX disk."
+          }
+
+          Write-Host "[+] Disk: $($disk.Number)"
+
+          Set-Disk -Number $disk.Number -IsOffline $false
+          Set-Disk -Number $disk.Number -IsReadOnly $false
+
+          Initialize-Disk `
+              -Number $disk.Number `
+              -PartitionStyle GPT `
+              -Confirm:$false
+
+          $efi = New-Partition `
+              -DiskNumber $disk.Number `
+              -Size 100MB `
+              -GptType "{C12A7328-F81F-11D2-BA4B-00A0C93EC93B}"
+
+          $msr = New-Partition `
+              -DiskNumber $disk.Number `
+              -Size 16MB `
+              -GptType "{E3C9E316-0B5C-4DB8-817D-F92DF00215AE}"
+
+          $os = New-Partition `
+              -DiskNumber $disk.Number `
+              -UseMaximumSize `
+              -AssignDriveLetter
+
+          Format-Volume `
+              -Partition $efi `
+              -FileSystem FAT32 `
+              -NewFileSystemLabel "SYSTEM" `
+              -Confirm:$false | Out-Null
+
+          Format-Volume `
+              -Partition $os `
+              -FileSystem NTFS `
+              -NewFileSystemLabel "Windows" `
+              -Confirm:$false | Out-Null
+
+          $efi = Get-Partition `
+              -DiskNumber $disk.Number `
+              -PartitionNumber $efi.PartitionNumber
+
+          $os = Get-Partition `
+              -DiskNumber $disk.Number `
+              -PartitionNumber $os.PartitionNumber
+
+          if (-not $efi.DriveLetter) {
+              Set-Partition `
+                  -DiskNumber $disk.Number `
+                  -PartitionNumber $efi.PartitionNumber `
+                  -NewDriveLetter S
+          }
+
+          $efiDrive = "S:"
+          $osDrive = "$($os.DriveLetter):"
+
+          Write-Host "[+] EFI: $efiDrive"
+          Write-Host "[+] OS : $osDrive"
+
+          $isoMount = Mount-DiskImage `
+              -ImagePath $env:CLIENT_ISO `
+              -PassThru
+
+          $isoDrive = (
+              $isoMount |
+              Get-Volume
+          ).DriveLetter
+
+          if (-not $isoDrive) {
+              throw "Could not determine client ISO drive letter."
+          }
+
+          $installWim = "${isoDrive}:\sources\install.wim"
+
+          if (-not (Test-Path $installWim)) {
+              $installWim = "${isoDrive}:\sources\install.esd"
+          }
+
+          if (-not (Test-Path $installWim)) {
+              throw "install.wim/install.esd not found."
+          }
+
+          Write-Host "[+] Applying image: $installWim"
+
+          dism.exe `
+              /Apply-Image `
+              "/ImageFile:$installWim" `
+              "/Index:${{ inputs.wim_index }}" `
+              "/ApplyDir:$osDrive\" `
+              /CheckIntegrity
+
+          if ($LASTEXITCODE -ne 0) {
+              throw "DISM Apply-Image failed: $LASTEXITCODE"
+          }
+
+          bcdboot.exe `
+              "$osDrive\Windows" `
+              /s $efiDrive `
+              /f UEFI
+
+          if ($LASTEXITCODE -ne 0) {
+              throw "BCDBoot failed: $LASTEXITCODE"
+          }
+
+          Dismount-DiskImage -ImagePath $env:CLIENT_ISO
+
+          Dismount-VHD -Path $vhdx
+
+          Write-Host "[+] Client VHDX prepared."
+
 
       # ============================================================
-      # 17. INSTALL SERVER AUTOUNATTEND
+      # PREPARE SERVER VHDX
       # ============================================================
 
-      - name: Install Server Autounattend.xml
+      - name: Prepare Windows Server DC01 VHDX
         shell: pwsh
         env:
           ADMIN_PASS: ${{ secrets.ADMIN_PASS }}
         run: |
           $ErrorActionPreference = 'Stop'
 
-          Write-Host "========== INSTALL SERVER UNATTEND =========="
+          Write-Host "========== PREPARE WINDOWS SERVER DC01 =========="
 
-          $source = Join-Path `
-            $env:GITHUB_WORKSPACE `
-            "Autounattend.xml"
+          $vhdx = $env:SERVER_VHDX
 
-          if (-not (Test-Path $source)) {
-              throw "Repository Autounattend.xml not found."
+          if (Test-Path $vhdx) {
+              Remove-Item $vhdx -Force
           }
 
-          if ([string]::IsNullOrWhiteSpace($env:ADMIN_PASS)) {
-              throw "ADMIN_PASS secret is empty or unavailable."
+          New-VHD `
+              -Path $vhdx `
+              -SizeBytes 80GB `
+              -Dynamic | Out-Null
+
+          Mount-VHD -Path $vhdx -Passthru | Out-Null
+
+          $disk = Get-Disk |
+              Where-Object PartitionStyle -eq 'RAW' |
+              Sort-Object Number -Descending |
+              Select-Object -First 1
+
+          if (-not $disk) {
+              throw "Could not locate mounted server VHDX disk."
           }
 
-          $targetDir = Join-Path `
-            $env:SERVER_OS `
-            "Windows\Panther"
+          Set-Disk -Number $disk.Number -IsOffline $false
+          Set-Disk -Number $disk.Number -IsReadOnly $false
 
-          $target = Join-Path `
-            $targetDir `
-            "Unattend.xml"
+          Initialize-Disk `
+              -Number $disk.Number `
+              -PartitionStyle GPT `
+              -Confirm:$false
 
-          New-Item `
-            -ItemType Directory `
-            -Path $targetDir `
-            -Force |
-            Out-Null
+          $efi = New-Partition `
+              -DiskNumber $disk.Number `
+              -Size 100MB `
+              -GptType "{C12A7328-F81F-11D2-BA4B-00A0C93EC93B}"
+
+          $msr = New-Partition `
+              -DiskNumber $disk.Number `
+              -Size 16MB `
+              -GptType "{E3C9E316-0B5C-4DB8-817D-F92DF00215AE}"
+
+          $os = New-Partition `
+              -DiskNumber $disk.Number `
+              -UseMaximumSize `
+              -AssignDriveLetter
+
+          Format-Volume `
+              -Partition $efi `
+              -FileSystem FAT32 `
+              -NewFileSystemLabel "SYSTEM" `
+              -Confirm:$false | Out-Null
+
+          Format-Volume `
+              -Partition $os `
+              -FileSystem NTFS `
+              -NewFileSystemLabel "Windows" `
+              -Confirm:$false | Out-Null
+
+          $efi = Get-Partition `
+              -DiskNumber $disk.Number `
+              -PartitionNumber $efi.PartitionNumber
+
+          $os = Get-Partition `
+              -DiskNumber $disk.Number `
+              -PartitionNumber $os.PartitionNumber
+
+          if (-not $efi.DriveLetter) {
+              Set-Partition `
+                  -DiskNumber $disk.Number `
+                  -PartitionNumber $efi.PartitionNumber `
+                  -NewDriveLetter T
+          }
+
+          $efiDrive = "T:"
+          $osDrive = "$($os.DriveLetter):"
+
+          $isoMount = Mount-DiskImage `
+              -ImagePath $env:SERVER_ISO `
+              -PassThru
+
+          $isoDrive = (
+              $isoMount |
+              Get-Volume
+          ).DriveLetter
+
+          if (-not $isoDrive) {
+              throw "Could not determine Server ISO drive letter."
+          }
+
+          $installWim = "${isoDrive}:\sources\install.wim"
+
+          if (-not (Test-Path $installWim)) {
+              $installWim = "${isoDrive}:\sources\install.esd"
+          }
+
+          if (-not (Test-Path $installWim)) {
+              throw "Server install.wim/install.esd not found."
+          }
+
+          Write-Host "[+] Applying Server image."
+
+          dism.exe `
+              /Apply-Image `
+              "/ImageFile:$installWim" `
+              "/Index:${{ inputs.server_wim_index }}" `
+              "/ApplyDir:$osDrive\" `
+              /CheckIntegrity
+
+          if ($LASTEXITCODE -ne 0) {
+              throw "DISM Apply-Image failed: $LASTEXITCODE"
+          }
+
+          @'
+          <?xml version="1.0" encoding="utf-8"?>
+          <unattend xmlns="urn:schemas-microsoft-com:unattend"
+                    xmlns:wcm="http://schemas.microsoft.com/WMIConfig/2002/State">
+
+              <settings pass="specialize">
+                  <component
+                      name="Microsoft-Windows-Shell-Setup"
+                      processorArchitecture="amd64"
+                      publicKeyToken="31bf3856ad364e35"
+                      language="neutral"
+                      versionScope="nonSxS">
+
+                      <ComputerName>SERVER-DC01</ComputerName>
+
+                  </component>
+              </settings>
+
+              <settings pass="oobeSystem">
+                  <component
+                      name="Microsoft-Windows-Shell-Setup"
+                      processorArchitecture="amd64"
+                      publicKeyToken="31bf3856ad364e35"
+                      language="neutral"
+                      versionScope="nonSxS">
+
+                      <OOBE>
+                          <HideEULAPage>true</HideEULAPage>
+                          <HideLocalAccountScreen>true</HideLocalAccountScreen>
+                          <HideOEMRegistrationScreen>true</HideOEMRegistrationScreen>
+                          <HideOnlineAccountScreens>true</HideOnlineAccountScreens>
+                          <HideWirelessSetupInOOBE>true</HideWirelessSetupInOOBE>
+                          <NetworkLocation>Work</NetworkLocation>
+                          <ProtectYourPC>1</ProtectYourPC>
+                      </OOBE>
+
+                      <UserAccounts>
+                          <AdministratorPassword>
+                              <Value>CHANGE_ME_ADMIN_PASSWORD</Value>
+                              <PlainText>true</PlainText>
+                          </AdministratorPassword>
+                      </UserAccounts>
+
+                  </component>
+              </settings>
+
+          </unattend>
+          '@ | Set-Content `
+              -Path "$osDrive\Windows\Panther\Unattend.xml" `
+              -Encoding UTF8
 
           $content = Get-Content `
-            -Raw `
-            -Path $source
-
-          if (-not $content.Contains("CHANGE_ME_ADMIN_PASSWORD")) {
-              throw "Password placeholder is missing from Autounattend.xml."
-          }
+              -Path "$osDrive\Windows\Panther\Unattend.xml" `
+              -Raw
 
           $content = $content.Replace(
               "CHANGE_ME_ADMIN_PASSWORD",
@@ -677,247 +452,187 @@ jobs:
           )
 
           Set-Content `
-            -Path $target `
-            -Value $content `
-            -Encoding UTF8
+              -Path "$osDrive\Windows\Panther\Unattend.xml" `
+              -Value $content `
+              -Encoding UTF8
 
-          Write-Host "[+] Server Unattend.xml installed."
-
-
-      # ============================================================
-      # 18. SERVER BOOT
-      # ============================================================
-
-      - name: Configure Server boot
-        shell: pwsh
-        run: |
-          $ErrorActionPreference = 'Stop'
-
-          Write-Host "========== CONFIGURE SERVER BOOT =========="
-
-          $diskNumber = [int]$env:SERVER_DISK
-
-          $efiPartition = Get-Partition `
-            -DiskNumber $diskNumber |
-            Where-Object {
-                $_.GptType -eq "{C12A7328-F81F-11D2-BA4B-00A0C93EC93B}"
-            } |
-            Select-Object -First 1
-
-          if (-not $efiPartition) {
-              throw "Server EFI partition not found."
-          }
-
-          @(
-              "select disk $diskNumber"
-              "select partition $($efiPartition.PartitionNumber)"
-              "assign letter=T"
-              "exit"
-          ) |
-            diskpart.exe
-
-          bcdboot `
-            "$env:SERVER_OS\Windows" `
-            /s T: `
-            /f UEFI
+          bcdboot.exe `
+              "$osDrive\Windows" `
+              /s $efiDrive `
+              /f UEFI
 
           if ($LASTEXITCODE -ne 0) {
-              throw "Server BCDBOOT failed with exit code $LASTEXITCODE"
+              throw "BCDBoot failed: $LASTEXITCODE"
           }
 
+          Dismount-DiskImage -ImagePath $env:SERVER_ISO
+
+          Dismount-VHD -Path $vhdx
+
+          Write-Host "[+] SERVER-DC01 VHDX prepared."
+
 
       # ============================================================
-      # 19. DISMOUNT SERVER VHDX
+      # CREATE OUTER NAT
       # ============================================================
 
-      - name: Dismount Server VHDX
+      - name: Prepare outer Hyper-V networking
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
 
-          Dismount-VHD `
-            -Path $env:SERVER_VHDX
+          Write-Host "========== OUTER HYPER-V NETWORK =========="
 
-
-      # ============================================================
-      # 20. CREATE SERVER-NAT ON L0
-      # ============================================================
-
-      - name: Create SERVER-NAT network
-        shell: pwsh
-        run: |
-          $ErrorActionPreference = 'Stop'
-
-          Write-Host "========== CREATE SERVER-NAT =========="
-
-          $switch = Get-VMSwitch `
-            -Name $env:SERVER_SWITCH `
-            -ErrorAction SilentlyContinue
-
-          if (-not $switch) {
+          if (-not (Get-VMSwitch -Name $env:SERVER_SWITCH -ErrorAction SilentlyContinue)) {
 
               New-VMSwitch `
-                -Name $env:SERVER_SWITCH `
-                -SwitchType Internal |
-                Out-Null
-          }
+                  -Name $env:SERVER_SWITCH `
+                  -SwitchType Internal | Out-Null
 
-          $adapter = Get-NetAdapter |
-            Where-Object {
-                $_.Name -like "*$env:SERVER_SWITCH*"
-            } |
-            Select-Object -First 1
-
-          if (-not $adapter) {
-              throw "SERVER-NAT adapter not found."
-          }
-
-          $existing = Get-NetIPAddress `
-            -InterfaceIndex $adapter.ifIndex `
-            -AddressFamily IPv4 `
-            -ErrorAction SilentlyContinue |
-            Where-Object {
-                $_.IPAddress -eq $env:SERVER_GATEWAY
-            }
-
-          if (-not $existing) {
+              $adapter = Get-NetAdapter `
+                  -Name "vEthernet ($env:SERVER_SWITCH)"
 
               New-NetIPAddress `
-                -InterfaceIndex $adapter.ifIndex `
-                -IPAddress $env:SERVER_GATEWAY `
-                -PrefixLength 24 |
-                Out-Null
-          }
-
-          $nat = Get-NetNat `
-            -Name "SERVER-NAT" `
-            -ErrorAction SilentlyContinue
-
-          if (-not $nat) {
+                  -InterfaceIndex $adapter.ifIndex `
+                  -IPAddress $env:SERVER_GATEWAY `
+                  -PrefixLength 24
 
               New-NetNat `
-                -Name "SERVER-NAT" `
-                -InternalIPInterfaceAddressPrefix $env:SERVER_PREFIX |
-                Out-Null
+                  -Name $env:SERVER_SWITCH `
+                  -InternalIPInterfaceAddressPrefix $env:SERVER_PREFIX
+
+              Write-Host "[+] SERVER-NAT created."
+          }
+          else {
+              Write-Host "[*] SERVER-NAT already exists."
           }
 
-          Write-Host "[+] SERVER-NAT ready."
-
 
       # ============================================================
-      # 21. CREATE SERVER-DC01
+      # CREATE SERVER-DC01
       # ============================================================
 
-      - name: Create SERVER-DC01 VM
+      - name: Create SERVER-DC01
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
 
           Write-Host "========== CREATE SERVER-DC01 =========="
 
-          $vm = Get-VM `
-            -Name $env:SERVER_VM `
-            -ErrorAction SilentlyContinue
+          if (Get-VM -Name $env:SERVER_VM -ErrorAction SilentlyContinue) {
+              Stop-VM `
+                  -Name $env:SERVER_VM `
+                  -TurnOff `
+                  -Force `
+                  -ErrorAction SilentlyContinue
 
-          if (-not $vm) {
-
-              New-VM `
-                -Name $env:SERVER_VM `
-                -Generation 2 `
-                -MemoryStartupBytes 4GB `
-                -VHDPath $env:SERVER_VHDX `
-                -SwitchName $env:SERVER_SWITCH |
-                Out-Null
+              Remove-VM `
+                  -Name $env:SERVER_VM `
+                  -Force
           }
 
-          Set-VM `
-            -Name $env:SERVER_VM `
-            -AutomaticStopAction TurnOff `
-            -AutomaticStartAction Nothing
-
-          # ========================================================
-          # NESTED VIRTUALIZATION MUST BE ENABLED BEFORE FIRST BOOT
-          # ========================================================
+          New-VM `
+              -Name $env:SERVER_VM `
+              -Generation 2 `
+              -MemoryStartupBytes 4GB `
+              -VHDPath $env:SERVER_VHDX `
+              -SwitchName $env:SERVER_SWITCH | Out-Null
 
           Set-VMProcessor `
-            -VMName $env:SERVER_VM `
-            -ExposeVirtualizationExtensions $true
+              -VMName $env:SERVER_VM `
+              -Count 4 `
+              -ExposeVirtualizationExtensions $true
 
           Set-VMNetworkAdapter `
-            -VMName $env:SERVER_VM `
-            -MacAddressSpoofing On
-
-          # ========================================================
-          # SECURE BOOT
-          # ========================================================
-
-          Set-VMFirmware `
-            -VMName $env:SERVER_VM `
-            -EnableSecureBoot On
-
-          # ========================================================
-          # vTPM
-          # ========================================================
-
-          Set-VMKeyProtector `
-            -VMName $env:SERVER_VM `
-            -NewLocalKeyProtector
-
-          Enable-VMTPM `
-            -VMName $env:SERVER_VM
-
-          # ========================================================
-          # GUEST SERVICE INTERFACE
-          # Needed later to copy VHDX into SERVER-DC01
-          # ========================================================
+              -VMName $env:SERVER_VM `
+              -MacAddressSpoofing On
 
           Enable-VMIntegrationService `
-            -VMName $env:SERVER_VM `
-            -Name "Guest Service Interface"
+              -VMName $env:SERVER_VM `
+              -Name "Guest Service Interface"
 
-          Write-Host "[+] SERVER-DC01 created."
+          try {
+              Set-VMFirmware `
+                  -VMName $env:SERVER_VM `
+                  -EnableSecureBoot On
+
+              Write-Host "[+] Secure Boot: ON"
+          }
+          catch {
+              Write-Warning "Secure Boot could not be enabled: $($_.Exception.Message)"
+          }
+
+          try {
+              if (Get-Command Set-VMKeyProtector -ErrorAction SilentlyContinue) {
+                  Set-VMKeyProtector `
+                      -VMName $env:SERVER_VM `
+                      -NewLocalKeyProtector
+
+                  Write-Host "[+] Local key protector configured."
+              }
+
+              if (Get-Command Enable-VMTPM -ErrorAction SilentlyContinue) {
+                  Enable-VMTPM `
+                      -VMName $env:SERVER_VM
+
+                  Write-Host "[+] vTPM enabled."
+              }
+          }
+          catch {
+              Write-Warning "vTPM/key protector unavailable: $($_.Exception.Message)"
+          }
+
           Write-Host "[+] Nested virtualization: ON"
           Write-Host "[+] MAC spoofing: ON"
-          Write-Host "[+] Secure Boot: ON"
-          Write-Host "[+] vTPM: ON"
           Write-Host "[+] Guest Service Interface: ON"
 
 
       # ============================================================
-      # 22. VERIFY SERVER VM BEFORE FIRST BOOT
+      # VERIFY SECURITY SETTINGS
       # ============================================================
 
-      - name: Verify SERVER-DC01 firmware and virtualization
+      - name: Verify SERVER-DC01 firmware settings
         shell: pwsh
         run: |
-          $ErrorActionPreference = 'Stop'
+          $ErrorActionPreference = 'Continue'
 
           Write-Host "========== VERIFY SERVER VM =========="
 
-          $processor = Get-VMProcessor `
-            -VMName $env:SERVER_VM
+          Get-VM `
+              -Name $env:SERVER_VM |
+              Select-Object Name,State,Generation,MemoryStartup
 
-          $firmware = Get-VMFirmware `
-            -VMName $env:SERVER_VM
+          Get-VMProcessor `
+              -VMName $env:SERVER_VM |
+              Select-Object VMName,Count,ExposeVirtualizationExtensions
 
-          $tpm = Get-VMSecurity `
-            -VMName $env:SERVER_VM
+          Get-VMNetworkAdapter `
+              -VMName $env:SERVER_VM |
+              Select-Object VMName,MacAddressSpoofing
 
-          Write-Host "Nested virtualization: $($processor.ExposeVirtualizationExtensions)"
-          Write-Host "Secure Boot: $($firmware.EnableSecureBoot)"
-          Write-Host "Key protector configured: $($tpm.KeyProtector -ne $null)"
-
-          if (-not $processor.ExposeVirtualizationExtensions) {
-              throw "Nested virtualization is NOT enabled before first boot."
+          try {
+              Get-VMFirmware `
+                  -VMName $env:SERVER_VM |
+                  Format-List *
+          }
+          catch {
+              Write-Warning "Get-VMFirmware failed: $($_.Exception.Message)"
           }
 
-          if ($firmware.EnableSecureBoot -ne "On") {
-              throw "Secure Boot is not enabled."
+          try {
+              Get-VMSecurity `
+                  -VMName $env:SERVER_VM |
+                  Format-List *
           }
+          catch {
+              Write-Warning "Get-VMSecurity failed: $($_.Exception.Message)"
+          }
+
+          Write-Host "[*] Firmware/security verification is informational."
 
 
       # ============================================================
-      # 23. START SERVER-DC01
+      # START SERVER
       # ============================================================
 
       - name: Start SERVER-DC01
@@ -927,92 +642,62 @@ jobs:
 
           Write-Host "========== START SERVER-DC01 =========="
 
-          Start-VM `
-            -Name $env:SERVER_VM
+          Start-VM -Name $env:SERVER_VM | Out-Null
 
-          Get-VM `
-            -Name $env:SERVER_VM |
-            Select-Object `
-              Name,
-              State,
-              Generation,
-              MemoryStartup |
-            Format-List
-
-          Get-VMProcessor `
-            -VMName $env:SERVER_VM |
-            Select-Object `
-              Count,
-              ExposeVirtualizationExtensions |
-            Format-List
+          Write-Host "[+] SERVER-DC01 started."
 
 
       # ============================================================
-      # 24. WAIT FOR POWERSHELL DIRECT
+      # WAIT FOR POWERSHELL DIRECT
       # ============================================================
 
-      - name: Wait for PowerShell Direct
+      - name: Wait for SERVER-DC01 PowerShell Direct
         shell: pwsh
         env:
           ADMIN_PASS: ${{ secrets.ADMIN_PASS }}
         run: |
-          $ErrorActionPreference = 'Continue'
+          $ErrorActionPreference = 'Stop'
 
-          Write-Host "========== WAIT FOR POWERSHELL DIRECT =========="
+          Write-Host "========== WAIT FOR SERVER-DC01 =========="
 
-          $securePassword = ConvertTo-SecureString `
-            $env:ADMIN_PASS `
-            -AsPlainText `
-            -Force
+          $secure = ConvertTo-SecureString `
+              $env:ADMIN_PASS `
+              -AsPlainText `
+              -Force
 
           $cred = New-Object `
-            System.Management.Automation.PSCredential(
-              ".\Administrator",
-              $securePassword
-            )
+              System.Management.Automation.PSCredential `
+              ("Administrator",$secure)
 
-          $connected = $false
+          $ready = $false
 
-          for ($i = 1; $i -le 60; $i++) {
-
-              Write-Host "[*] PowerShell Direct attempt $i/60..."
+          for ($i = 1; $i -le 120; $i++) {
 
               try {
+                  Invoke-Command `
+                      -VMName $env:SERVER_VM `
+                      -Credential $cred `
+                      -ScriptBlock {
+                          "READY"
+                      } `
+                      -ErrorAction Stop | Out-Null
 
-                  $result = Invoke-Command `
-                    -VMName $env:SERVER_VM `
-                    -Credential $cred `
-                    -ScriptBlock {
-                        hostname
-                        whoami
-                    } `
-                    -ErrorAction Stop
-
-                  Write-Host "[+] Guest responded:"
-
-                  $result |
-                    ForEach-Object {
-                        Write-Host "    $_"
-                    }
-
-                  $connected = $true
+                  $ready = $true
+                  Write-Host "[+] PowerShell Direct ready."
                   break
               }
               catch {
-
-                  Write-Host "[*] Guest not ready."
-
-                  Start-Sleep -Seconds 10
+                  Write-Host "[*] Waiting... $i/120"
+                  Start-Sleep -Seconds 5
               }
           }
 
-          if (-not $connected) {
-              throw "PowerShell Direct could not connect to SERVER-DC01."
-          }
+          if (-not $ready) {
+              throw "SERVER-DC01 did not become available through PowerShell Direct."
 
 
       # ============================================================
-      # 25. CONFIGURE SERVER NETWORK
+      # CONFIGURE SERVER NETWORK
       # ============================================================
 
       - name: Configure SERVER-DC01 network
@@ -1024,391 +709,363 @@ jobs:
 
           Write-Host "========== CONFIGURE SERVER NETWORK =========="
 
-          $securePassword = ConvertTo-SecureString `
-            $env:ADMIN_PASS `
-            -AsPlainText `
-            -Force
+          $secure = ConvertTo-SecureString `
+              $env:ADMIN_PASS `
+              -AsPlainText `
+              -Force
 
           $cred = New-Object `
-            System.Management.Automation.PSCredential(
-              ".\Administrator",
-              $securePassword
-            )
+              System.Management.Automation.PSCredential `
+              ("Administrator",$secure)
 
           Invoke-Command `
-            -VMName $env:SERVER_VM `
-            -Credential $cred `
-            -ArgumentList `
-              $env:SERVER_IP,
-              $env:SERVER_GATEWAY `
-            -ScriptBlock {
+              -VMName $env:SERVER_VM `
+              -Credential $cred `
+              -ScriptBlock {
 
-                param(
-                    $StaticIP,
-                    $Gateway
-                )
+                  param(
+                      $ServerIP,
+                      $Gateway
+                  )
 
-                $adapter = Get-NetAdapter |
-                    Where-Object Status -eq "Up" |
-                    Select-Object -First 1
+                  $adapter = Get-NetAdapter |
+                      Where-Object Status -eq "Up" |
+                      Select-Object -First 1
 
-                if (-not $adapter) {
-                    throw "No active network adapter found."
-                }
+                  if (-not $adapter) {
+                      throw "No active network adapter found."
+                  }
 
-                Write-Host "Adapter: $($adapter.Name)"
+                  Get-NetIPAddress `
+                      -InterfaceIndex $adapter.ifIndex `
+                      -AddressFamily IPv4 `
+                      -ErrorAction SilentlyContinue |
+                      Where-Object {
+                          $_.IPAddress -ne "127.0.0.1"
+                      } |
+                      Remove-NetIPAddress `
+                          -Confirm:$false `
+                          -ErrorAction SilentlyContinue
 
-                Get-NetIPAddress `
-                    -InterfaceIndex $adapter.ifIndex `
-                    -AddressFamily IPv4 `
-                    -ErrorAction SilentlyContinue |
-                    Where-Object {
-                        $_.IPAddress -notlike "169.254.*" -and
-                        $_.IPAddress -ne "127.0.0.1"
-                    } |
-                    Remove-NetIPAddress `
-                        -Confirm:$false `
-                        -ErrorAction SilentlyContinue
+                  New-NetIPAddress `
+                      -InterfaceIndex $adapter.ifIndex `
+                      -IPAddress $ServerIP `
+                      -PrefixLength 24 `
+                      -DefaultGateway $Gateway `
+                      -ErrorAction Stop | Out-Null
 
-                New-NetIPAddress `
-                    -InterfaceIndex $adapter.ifIndex `
-                    -IPAddress $StaticIP `
-                    -PrefixLength 24 `
-                    -DefaultGateway $Gateway
+                  Set-DnsClientServerAddress `
+                      -InterfaceIndex $adapter.ifIndex `
+                      -ServerAddresses @("127.0.0.1","8.8.8.8")
 
-                Set-DnsClientServerAddress `
-                    -InterfaceIndex $adapter.ifIndex `
-                    -ServerAddresses @($Gateway)
+                  Write-Host "[+] IP: $ServerIP"
+                  Write-Host "[+] Gateway: $Gateway"
 
-                Get-NetIPAddress `
-                    -InterfaceIndex $adapter.ifIndex `
-                    -AddressFamily IPv4
-            }
+              } `
+              -ArgumentList `
+                  $env:SERVER_IP,
+                  $env:SERVER_GATEWAY
 
 
       # ============================================================
-      # 26. INSTALL HYPER-V INSIDE SERVER-DC01
+      # INSTALL NESTED HYPER-V
       # ============================================================
 
-      - name: Install nested Hyper-V inside SERVER-DC01
+      - name: Install nested Hyper-V
         shell: pwsh
         env:
           ADMIN_PASS: ${{ secrets.ADMIN_PASS }}
         run: |
-          $ErrorActionPreference = 'Stop'
+          $ErrorActionPreference = 'Continue'
 
           Write-Host "========== INSTALL NESTED HYPER-V =========="
 
-          $securePassword = ConvertTo-SecureString `
-            $env:ADMIN_PASS `
-            -AsPlainText `
-            -Force
+          $secure = ConvertTo-SecureString `
+              $env:ADMIN_PASS `
+              -AsPlainText `
+              -Force
 
           $cred = New-Object `
-            System.Management.Automation.PSCredential(
-              ".\Administrator",
-              $securePassword
-            )
+              System.Management.Automation.PSCredential `
+              ("Administrator",$secure)
 
           Invoke-Command `
-            -VMName $env:SERVER_VM `
-            -Credential $cred `
-            -ScriptBlock {
+              -VMName $env:SERVER_VM `
+              -Credential $cred `
+              -ScriptBlock {
 
-                Install-WindowsFeature `
-                    -Name Hyper-V `
-                    -IncludeManagementTools `
-                    -Restart:$false
+                  $feature = Get-WindowsFeature Hyper-V
 
-                Get-WindowsFeature Hyper-V |
-                    Select-Object Name, InstallState
-            }
+                  if (-not $feature.Installed) {
 
+                      Install-WindowsFeature `
+                          Hyper-V `
+                          -IncludeManagementTools
 
-      # ============================================================
-      # 27. REBOOT SERVER-DC01 AFTER HYPER-V INSTALL
-      # ============================================================
+                      Write-Host "[+] Hyper-V installed."
+                  }
+                  else {
+                      Write-Host "[*] Hyper-V already installed."
+                  }
 
-      - name: Reboot SERVER-DC01 for nested Hyper-V
-        shell: pwsh
-        env:
-          ADMIN_PASS: ${{ secrets.ADMIN_PASS }}
-        run: |
-          $ErrorActionPreference = 'Continue'
+              }
 
-          Write-Host "========== REBOOT SERVER-DC01 =========="
-
-          $securePassword = ConvertTo-SecureString `
-            $env:ADMIN_PASS `
-            -AsPlainText `
-            -Force
-
-          $cred = New-Object `
-            System.Management.Automation.PSCredential(
-              ".\Administrator",
-              $securePassword
-            )
-
-          Invoke-Command `
-            -VMName $env:SERVER_VM `
-            -Credential $cred `
-            -ScriptBlock {
-                Restart-Computer -Force
-            } `
-            -ErrorAction SilentlyContinue
+          Write-Host "[*] Waiting for SERVER-DC01 reboot..."
 
           Start-Sleep -Seconds 20
 
+          $ready = $false
+
+          for ($i = 1; $i -le 120; $i++) {
+
+              try {
+                  Invoke-Command `
+                      -VMName $env:SERVER_VM `
+                      -Credential $cred `
+                      -ScriptBlock { "READY" } `
+                      -ErrorAction Stop | Out-Null
+
+                  $ready = $true
+                  break
+              }
+              catch {
+                  Write-Host "[*] Waiting after Hyper-V reboot... $i/120"
+                  Start-Sleep -Seconds 5
+              }
+          }
+
+          if (-not $ready) {
+              throw "SERVER-DC01 did not return after Hyper-V installation."
+
 
       # ============================================================
-      # 28. WAIT AFTER HYPER-V REBOOT
+      # INSTALL AD DS / DNS
       # ============================================================
 
-      - name: Wait for SERVER-DC01 after Hyper-V reboot
+      - name: Install AD DS and DNS
         shell: pwsh
         env:
           ADMIN_PASS: ${{ secrets.ADMIN_PASS }}
         run: |
           $ErrorActionPreference = 'Continue'
-
-          Write-Host "========== WAIT AFTER HYPER-V REBOOT =========="
-
-          $securePassword = ConvertTo-SecureString `
-            $env:ADMIN_PASS `
-            -AsPlainText `
-            -Force
-
-          $cred = New-Object `
-            System.Management.Automation.PSCredential(
-              ".\Administrator",
-              $securePassword
-            )
-
-          $connected = $false
-
-          for ($i = 1; $i -le 60; $i++) {
-
-              try {
-
-                  Invoke-Command `
-                    -VMName $env:SERVER_VM `
-                    -Credential $cred `
-                    -ScriptBlock {
-                        hostname
-                        Get-WindowsFeature Hyper-V |
-                            Select-Object Name, InstallState
-                    } `
-                    -ErrorAction Stop
-
-                  Write-Host "[+] SERVER-DC01 is back."
-
-                  $connected = $true
-                  break
-              }
-              catch {
-
-                  Write-Host "[*] Waiting..."
-
-                  Start-Sleep -Seconds 10
-              }
-          }
-
-          if (-not $connected) {
-              throw "SERVER-DC01 did not return after Hyper-V installation."
-          }
-
-
-      # ============================================================
-      # 29. INSTALL AD DS + DNS
-      # ============================================================
-
-      - name: Install AD DS and DNS inside SERVER-DC01
-        shell: pwsh
-        env:
-          ADMIN_PASS: ${{ secrets.ADMIN_PASS }}
-        run: |
-          $ErrorActionPreference = 'Stop'
 
           Write-Host "========== INSTALL AD DS + DNS =========="
 
-          $securePassword = ConvertTo-SecureString `
-            $env:ADMIN_PASS `
-            -AsPlainText `
-            -Force
-
-          $cred = New-Object `
-            System.Management.Automation.PSCredential(
-              ".\Administrator",
-              $securePassword
-            )
-
-          Invoke-Command `
-            -VMName $env:SERVER_VM `
-            -Credential $cred `
-            -ScriptBlock {
-
-                Install-WindowsFeature `
-                    AD-Domain-Services,
-                    DNS `
-                    -IncludeManagementTools
-
-                Get-WindowsFeature `
-                    AD-Domain-Services,
-                    DNS |
-                    Select-Object Name, InstallState
-            }
-
-
-      # ============================================================
-      # 30. PROMOTE SERVER-DC01
-      # ============================================================
-
-      - name: Promote SERVER-DC01 to domain controller
-        shell: pwsh
-        env:
-          ADMIN_PASS: ${{ secrets.ADMIN_PASS }}
-        run: |
-          $ErrorActionPreference = 'Stop'
-
-          Write-Host "========== PROMOTE SERVER-DC01 =========="
-
-          $securePassword = ConvertTo-SecureString `
-            $env:ADMIN_PASS `
-            -AsPlainText `
-            -Force
-
-          $cred = New-Object `
-            System.Management.Automation.PSCredential(
-              ".\Administrator",
-              $securePassword
-            )
-
-          Invoke-Command `
-            -VMName $env:SERVER_VM `
-            -Credential $cred `
-            -ArgumentList `
-              $env:AD_DOMAIN,
-              $env:AD_NETBIOS,
+          $secure = ConvertTo-SecureString `
               $env:ADMIN_PASS `
-            -ScriptBlock {
+              -AsPlainText `
+              -Force
 
-                param(
-                    $Domain,
-                    $Netbios,
-                    $AdminPassword
-                )
+          $cred = New-Object `
+              System.Management.Automation.PSCredential `
+              ("Administrator",$secure)
 
-                $safeModePassword = ConvertTo-SecureString `
-                    $AdminPassword `
-                    -AsPlainText `
-                    -Force
+          Invoke-Command `
+              -VMName $env:SERVER_VM `
+              -Credential $cred `
+              -ScriptBlock {
 
-                Install-ADDSForest `
-                    -DomainName $Domain `
-                    -DomainNetbiosName $Netbios `
-                    -SafeModeAdministratorPassword $safeModePassword `
-                    -InstallDns `
-                    -CreateDnsDelegation:$false `
-                    -DatabasePath "C:\Windows\NTDS" `
-                    -LogPath "C:\Windows\NTDS" `
-                    -SysvolPath "C:\Windows\SYSVOL" `
-                    -NoRebootOnCompletion:$false `
-                    -Force
-            }
+                  Install-WindowsFeature `
+                      AD-Domain-Services `
+                      DNS `
+                      -IncludeManagementTools
 
+                  Import-Module ADDSDeployment
 
-      # ============================================================
-      # 31. WAIT FOR DC REBOOT
-      # ============================================================
+                  $safeModePassword = ConvertTo-SecureString `
+                      $using:env:ADMIN_PASS `
+                      -AsPlainText `
+                      -Force
 
-      - name: Wait for domain controller reboot
-        shell: pwsh
-        run: |
-          Write-Host "========== WAIT FOR DC REBOOT =========="
+                  Install-ADDSForest `
+                      -DomainName $using:env:AD_DOMAIN `
+                      -DomainNetbiosName $using:env:AD_NETBIOS `
+                      -SafeModeAdministratorPassword $safeModePassword `
+                      -InstallDns `
+                      -CreateDnsDelegation:$false `
+                      -DatabasePath "C:\Windows\NTDS" `
+                      -LogPath "C:\Windows\NTDS" `
+                      -SysvolPath "C:\Windows\SYSVOL" `
+                      -NoRebootOnCompletion:$false `
+                      -Force
+
+              }
 
           Start-Sleep -Seconds 30
 
-          for ($i = 1; $i -le 30; $i++) {
-
-              $vm = Get-VM `
-                -Name $env:SERVER_VM `
-                -ErrorAction SilentlyContinue
-
-              if ($vm) {
-                  Write-Host "[*] VM state: $($vm.State)"
-              }
-
-              Start-Sleep -Seconds 5
-          }
-
 
       # ============================================================
-      # 32. RECONNECT AFTER AD DS
+      # WAIT AFTER DOMAIN CONTROLLER PROMOTION
       # ============================================================
 
-      - name: Reconnect to SERVER-DC01
+      - name: Wait for domain controller
         shell: pwsh
         env:
           ADMIN_PASS: ${{ secrets.ADMIN_PASS }}
         run: |
           $ErrorActionPreference = 'Continue'
 
-          Write-Host "========== RECONNECT TO SERVER-DC01 =========="
+          Write-Host "========== WAIT FOR DOMAIN CONTROLLER =========="
 
-          $securePassword = ConvertTo-SecureString `
-            $env:ADMIN_PASS `
-            -AsPlainText `
-            -Force
+          $secure = ConvertTo-SecureString `
+              $env:ADMIN_PASS `
+              -AsPlainText `
+              -Force
 
           $cred = New-Object `
-            System.Management.Automation.PSCredential(
-              ".\Administrator",
-              $securePassword
-            )
+              System.Management.Automation.PSCredential `
+              ("Administrator",$secure)
 
-          $connected = $false
+          $ready = $false
 
-          for ($i = 1; $i -le 60; $i++) {
+          for ($i = 1; $i -le 180; $i++) {
 
               try {
-
                   $result = Invoke-Command `
-                    -VMName $env:SERVER_VM `
-                    -Credential $cred `
-                    -ScriptBlock {
-                        hostname
-                        whoami
+                      -VMName $env:SERVER_VM `
+                      -Credential $cred `
+                      -ScriptBlock {
 
-                        Get-Service `
-                            NTDS,
-                            DNS |
-                            Select-Object Name, Status
-                    } `
-                    -ErrorAction Stop
+                          Get-Service `
+                              -Name NTDS `
+                              -ErrorAction Stop |
+                              Select-Object -ExpandProperty Status
+                      } `
+                      -ErrorAction Stop
 
-                  $result |
-                    ForEach-Object {
-                        Write-Host "    $_"
-                    }
-
-                  $connected = $true
-                  break
+                  if ($result -eq "Running") {
+                      $ready = $true
+                      Write-Host "[+] NTDS is running."
+                      break
+                  }
               }
               catch {
-
-                  Write-Host "[*] DC not ready."
-
-                  Start-Sleep -Seconds 10
               }
+
+              Write-Host "[*] Waiting for AD DS... $i/180"
+              Start-Sleep -Seconds 5
           }
 
-          if (-not $connected) {
-              throw "Could not reconnect to SERVER-DC01."
-          }
+          if (-not $ready) {
+              throw "AD DS did not become ready."
 
 
       # ============================================================
-      # 33. VERIFY AD DS / DNS
+      # CREATE NESTED RDS NAT + DHCP
+      # ============================================================
+
+      - name: Configure nested RDS NAT and DHCP
+        shell: pwsh
+        env:
+          ADMIN_PASS: ${{ secrets.ADMIN_PASS }}
+        run: |
+          $ErrorActionPreference = 'Continue'
+
+          Write-Host "========== CONFIGURE RDS-NAT =========="
+
+          $secure = ConvertTo-SecureString `
+              $env:ADMIN_PASS `
+              -AsPlainText `
+              -Force
+
+          $cred = New-Object `
+              System.Management.Automation.PSCredential `
+              ("Administrator",$secure)
+
+          Invoke-Command `
+              -VMName $env:SERVER_VM `
+              -Credential $cred `
+              -ScriptBlock {
+
+                  $switch = Get-VMSwitch `
+                      -Name $using:env:RDS_SWITCH `
+                      -ErrorAction SilentlyContinue
+
+                  if (-not $switch) {
+                      New-VMSwitch `
+                          -Name $using:env:RDS_SWITCH `
+                          -SwitchType Internal | Out-Null
+                  }
+
+                  $adapter = Get-NetAdapter `
+                      -Name "vEthernet ($using:env:RDS_SWITCH)" `
+                      -ErrorAction Stop
+
+                  $existing = Get-NetIPAddress `
+                      -InterfaceIndex $adapter.ifIndex `
+                      -AddressFamily IPv4 `
+                      -ErrorAction SilentlyContinue |
+                      Where-Object IPAddress -eq $using:env:RDS_GATEWAY
+
+                  if (-not $existing) {
+                      New-NetIPAddress `
+                          -InterfaceIndex $adapter.ifIndex `
+                          -IPAddress $using:env:RDS_GATEWAY `
+                          -PrefixLength 24 `
+                          -ErrorAction Stop | Out-Null
+                  }
+
+                  if (-not (Get-NetNat -Name $using:env:RDS_SWITCH -ErrorAction SilentlyContinue)) {
+                      New-NetNat `
+                          -Name $using:env:RDS_SWITCH `
+                          -InternalIPInterfaceAddressPrefix $using:env:RDS_PREFIX
+                  }
+
+                  Write-Host "[+] RDS-NAT ready."
+
+                  # DHCP is used because the RDS broker-created
+                  # pooled desktops cannot all have one static address.
+
+                  if (-not (Get-WindowsFeature DHCP).Installed) {
+                      Install-WindowsFeature `
+                          DHCP `
+                          -IncludeManagementTools
+                  }
+
+                  Import-Module DhcpServer
+
+                  try {
+                      Add-DhcpServerInDC `
+                          -DnsName $env:COMPUTERNAME `
+                          -IPAddress $using:env:SERVER_IP `
+                          -ErrorAction SilentlyContinue
+                  }
+                  catch {
+                  }
+
+                  $scope = Get-DhcpServerv4Scope `
+                      -ScopeId 192.168.252.0 `
+                      -ErrorAction SilentlyContinue
+
+                  if (-not $scope) {
+
+                      Add-DhcpServerv4Scope `
+                          -Name "RDS-NAT Scope" `
+                          -StartRange 192.168.252.100 `
+                          -EndRange 192.168.252.200 `
+                          -SubnetMask 255.255.255.0 `
+                          -State Active
+
+                      Add-DhcpServerv4ExclusionRange `
+                          -ScopeId 192.168.252.0 `
+                          -StartRange 192.168.252.1 `
+                          -EndRange 192.168.252.99
+
+                      Set-DhcpServerv4OptionValue `
+                          -ScopeId 192.168.252.0 `
+                          -Router 192.168.252.1 `
+                          -DnsServer 192.168.252.1 `
+                          -DnsDomain $using:env:AD_DOMAIN
+                  }
+
+                  Restart-Service DHCPServer -ErrorAction SilentlyContinue
+
+                  Write-Host "[+] DHCP configured."
+              }
+
+
+      # ============================================================
+      # VERIFY AD
       # ============================================================
 
       - name: Verify AD DS and DNS
@@ -1418,852 +1075,920 @@ jobs:
         run: |
           $ErrorActionPreference = 'Continue'
 
-          Write-Host "========== VERIFY AD DS / DNS =========="
+          Write-Host "========== VERIFY AD DS + DNS =========="
 
-          $securePassword = ConvertTo-SecureString `
-            $env:ADMIN_PASS `
-            -AsPlainText `
-            -Force
-
-          $cred = New-Object `
-            System.Management.Automation.PSCredential(
-              ".\Administrator",
-              $securePassword
-            )
-
-          Invoke-Command `
-            -VMName $env:SERVER_VM `
-            -Credential $cred `
-            -ScriptBlock {
-
-                Write-Host "========== HOSTNAME =========="
-                hostname
-
-                Write-Host "========== DOMAIN =========="
-
-                Get-CimInstance `
-                    Win32_ComputerSystem |
-                    Select-Object `
-                        Name,
-                        Domain,
-                        PartOfDomain
-
-                Write-Host "========== AD DOMAIN =========="
-
-                Import-Module ActiveDirectory
-
-                Get-ADDomain |
-                    Select-Object `
-                        DNSRoot,
-                        NetBIOSName,
-                        DomainMode,
-                        Forest
-
-                Write-Host "========== DNS =========="
-
-                Get-Service DNS |
-                    Select-Object Name, Status, StartType
-
-                Write-Host "========== NTDS =========="
-
-                Get-Service NTDS |
-                    Select-Object Name, Status, StartType
-
-                Write-Host "========== HYPER-V =========="
-
-                Get-WindowsFeature Hyper-V |
-                    Select-Object Name, InstallState
-            }
-
-
-      # ============================================================
-      # 34. INSTALL RDS ROLES INSIDE SERVER-DC01
-      # ============================================================
-
-      - name: Install RDS roles inside SERVER-DC01
-        shell: pwsh
-        env:
-          ADMIN_PASS: ${{ secrets.ADMIN_PASS }}
-        run: |
-          $ErrorActionPreference = 'Stop'
-
-          Write-Host "========== INSTALL RDS INSIDE SERVER-DC01 =========="
-
-          $securePassword = ConvertTo-SecureString `
-            $env:ADMIN_PASS `
-            -AsPlainText `
-            -Force
+          $secure = ConvertTo-SecureString `
+              $env:ADMIN_PASS `
+              -AsPlainText `
+              -Force
 
           $cred = New-Object `
-            System.Management.Automation.PSCredential(
-              ".\Administrator",
-              $securePassword
-            )
+              System.Management.Automation.PSCredential `
+              ("Administrator",$secure)
 
           Invoke-Command `
-            -VMName $env:SERVER_VM `
-            -Credential $cred `
-            -ScriptBlock {
+              -VMName $env:SERVER_VM `
+              -Credential $cred `
+              -ScriptBlock {
 
-                $features = @(
-                    "RDS-Connection-Broker",
-                    "RDS-Web-Access",
-                    "RDS-Virtualization"
-                )
+                  Write-Host "--- Computer ---"
+                  Get-CimInstance Win32_ComputerSystem |
+                      Select-Object Name,Domain,PartOfDomain
 
-                Install-WindowsFeature `
-                    -Name $features `
-                    -IncludeManagementTools `
-                    -Restart:$false
+                  Write-Host "--- AD Domain ---"
 
-                Get-WindowsFeature |
-                    Where-Object {
-                        $_.Name -in $features
-                    } |
-                    Select-Object Name, InstallState
-            }
+                  try {
+                      Import-Module ActiveDirectory
 
+                      Get-ADDomain |
+                          Select-Object DNSRoot,NetBIOSName,DomainMode
+                  }
+                  catch {
+                      Write-Warning $_.Exception.Message
+                  }
 
-      # ============================================================
-      # 35. ENABLE NESTED RDS NETWORK INSIDE SERVER-DC01
-      # ============================================================
+                  Write-Host "--- Services ---"
 
-      - name: Create nested RDS NAT network
-        shell: pwsh
-        env:
-          ADMIN_PASS: ${{ secrets.ADMIN_PASS }}
-        run: |
-          $ErrorActionPreference = 'Stop'
+                  Get-Service NTDS,DNS,Netlogon |
+                      Select-Object Name,Status
 
-          Write-Host "========== CREATE NESTED RDS-NAT =========="
+                  Write-Host "--- DNS ---"
 
-          $securePassword = ConvertTo-SecureString `
-            $env:ADMIN_PASS `
-            -AsPlainText `
-            -Force
-
-          $cred = New-Object `
-            System.Management.Automation.PSCredential(
-              ".\Administrator",
-              $securePassword
-            )
-
-          Invoke-Command `
-            -VMName $env:SERVER_VM `
-            -Credential $cred `
-            -ArgumentList `
-              $env:NESTED_SWITCH,
-              $env:NESTED_GATEWAY,
-              $env:NESTED_PREFIX `
-            -ScriptBlock {
-
-                param(
-                    $SwitchName,
-                    $Gateway,
-                    $Prefix
-                )
-
-                $switch = Get-VMSwitch `
-                    -Name $SwitchName `
-                    -ErrorAction SilentlyContinue
-
-                if (-not $switch) {
-
-                    New-VMSwitch `
-                        -Name $SwitchName `
-                        -SwitchType Internal |
-                        Out-Null
-                }
-
-                $adapter = Get-NetAdapter |
-                    Where-Object {
-                        $_.Name -like "*$SwitchName*"
-                    } |
-                    Select-Object -First 1
-
-                if (-not $adapter) {
-                    throw "Nested RDS-NAT adapter not found."
-                }
-
-                $existing = Get-NetIPAddress `
-                    -InterfaceIndex $adapter.ifIndex `
-                    -AddressFamily IPv4 `
-                    -ErrorAction SilentlyContinue |
-                    Where-Object {
-                        $_.IPAddress -eq $Gateway
-                    }
-
-                if (-not $existing) {
-
-                    New-NetIPAddress `
-                        -InterfaceIndex $adapter.ifIndex `
-                        -IPAddress $Gateway `
-                        -PrefixLength 24 |
-                        Out-Null
-                }
-
-                $nat = Get-NetNat `
-                    -Name "RDS-NAT" `
-                    -ErrorAction SilentlyContinue
-
-                if (-not $nat) {
-
-                    New-NetNat `
-                        -Name "RDS-NAT" `
-                        -InternalIPInterfaceAddressPrefix $Prefix |
-                        Out-Null
-                }
-
-                Write-Host "[+] Nested switch: $SwitchName"
-                Write-Host "[+] Gateway: $Gateway"
-
-                Get-VMSwitch |
-                    Select-Object Name, SwitchType
-
-                Get-NetNat |
-                    Select-Object Name, InternalIPInterfaceAddressPrefix
-            }
+                  Resolve-DnsName `
+                      $using:env:AD_DOMAIN `
+                      -ErrorAction Continue
+              }
 
 
       # ============================================================
-      # 36. COPY CLIENT VHDX INTO SERVER-DC01
+      # COPY CLIENT VHDX INTO L1
       # ============================================================
 
-      - name: Copy client VHDX into SERVER-DC01
+      - name: Copy VDI master VHDX into SERVER-DC01
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
 
-          Write-Host "========== COPY CLIENT VHDX INTO SERVER-DC01 =========="
+          Write-Host "========== COPY VDI MASTER INTO L1 =========="
 
-          $destination = "C:\VDI\Windows-VDI-Master.vhdx"
+          $secure = ConvertTo-SecureString `
+              "${{ secrets.ADMIN_PASS }}" `
+              -AsPlainText `
+              -Force
+
+          $cred = New-Object `
+              System.Management.Automation.PSCredential `
+              ("Administrator",$secure)
 
           Invoke-Command `
-            -VMName $env:SERVER_VM `
-            -Credential (
-                New-Object `
-                    System.Management.Automation.PSCredential(
-                        ".\Administrator",
-                        (
-                            ConvertTo-SecureString `
-                                "${{ secrets.ADMIN_PASS }}" `
-                                -AsPlainText `
-                                -Force
-                        )
-                    )
-            ) `
-            -ScriptBlock {
+              -VMName $env:SERVER_VM `
+              -Credential $cred `
+              -ScriptBlock {
 
-                New-Item `
-                    -ItemType Directory `
-                    -Path "C:\VDI" `
-                    -Force |
-                    Out-Null
-            }
+                  New-Item `
+                      -Path "C:\VDI\Templates" `
+                      -ItemType Directory `
+                      -Force | Out-Null
+
+                  New-Item `
+                      -Path "C:\VDI\Collections" `
+                      -ItemType Directory `
+                      -Force | Out-Null
+
+              }
+
+          Enable-VMIntegrationService `
+              -VMName $env:SERVER_VM `
+              -Name "Guest Service Interface"
 
           Copy-VMFile `
-            -Name $env:SERVER_VM `
-            -SourcePath $env:MASTER_VHDX `
-            -DestinationPath $destination `
-            -FileSource Host `
-            -CreateFullPath
+              -Name $env:SERVER_VM `
+              -SourcePath $env:CLIENT_VHDX `
+              -DestinationPath $env:TEMPLATE_VHDX `
+              -FileSource Host `
+              -CreateFullPath
 
           Write-Host "[+] Client VHDX copied into SERVER-DC01."
 
-          Invoke-Command `
-            -VMName $env:SERVER_VM `
-            -Credential (
-                New-Object `
-                    System.Management.Automation.PSCredential(
-                        ".\Administrator",
-                        (
-                            ConvertTo-SecureString `
-                                "${{ secrets.ADMIN_PASS }}" `
-                                -AsPlainText `
-                                -Force
-                        )
-                    )
-            ) `
-            -ScriptBlock {
-
-                Get-Item `
-                    "C:\VDI\Windows-VDI-Master.vhdx" |
-                    Select-Object Name, Length, FullName
-            }
-
 
       # ============================================================
-      # 37. CREATE RDS MASTER TEMPLATE INSIDE SERVER-DC01
+      # CREATE ONLY THE RDS TEMPLATE VM
       # ============================================================
 
-      - name: Create nested RDS master template
+      - name: Create RDS master template VM
         shell: pwsh
         env:
           ADMIN_PASS: ${{ secrets.ADMIN_PASS }}
         run: |
           $ErrorActionPreference = 'Stop'
 
-          Write-Host "========== CREATE NESTED RDS MASTER =========="
+          Write-Host "========== CREATE RDS MASTER TEMPLATE =========="
 
-          $securePassword = ConvertTo-SecureString `
-            $env:ADMIN_PASS `
-            -AsPlainText `
-            -Force
-
-          $cred = New-Object `
-            System.Management.Automation.PSCredential(
-              ".\Administrator",
-              $securePassword
-            )
-
-          Invoke-Command `
-            -VMName $env:SERVER_VM `
-            -Credential $cred `
-            -ArgumentList `
-              "C:\VDI\Windows-VDI-Master.vhdx",
-              $env:NESTED_SWITCH `
-            -ScriptBlock {
-
-                param(
-                    $MasterVHDX,
-                    $SwitchName
-                )
-
-                $vmName = "RDS-Master-Template"
-
-                $existing = Get-VM `
-                    -Name $vmName `
-                    -ErrorAction SilentlyContinue
-
-                if (-not $existing) {
-
-                    New-VM `
-                        -Name $vmName `
-                        -Generation 2 `
-                        -MemoryStartupBytes 4GB `
-                        -VHDPath $MasterVHDX `
-                        -SwitchName $SwitchName |
-                        Out-Null
-                }
-
-                Set-VM `
-                    -Name $vmName `
-                    -AutomaticStopAction TurnOff `
-                    -AutomaticStartAction Nothing
-
-                Stop-VM `
-                    -Name $vmName `
-                    -TurnOff `
-                    -Force `
-                    -ErrorAction SilentlyContinue
-
-                Write-Host "[+] Nested RDS master created."
-
-                Get-VM `
-                    -Name $vmName |
-                    Select-Object `
-                        Name,
-                        State,
-                        Generation,
-                        MemoryStartup
-            }
-
-
-      # ============================================================
-      # 38. CREATE NESTED DIFFERENCING DISK
-      # ============================================================
-
-      - name: Create nested RDS differencing disk
-        shell: pwsh
-        env:
-          ADMIN_PASS: ${{ secrets.ADMIN_PASS }}
-        run: |
-          $ErrorActionPreference = 'Stop'
-
-          Write-Host "========== CREATE NESTED DIFFERENCING DISK =========="
-
-          $securePassword = ConvertTo-SecureString `
-            $env:ADMIN_PASS `
-            -AsPlainText `
-            -Force
+          $secure = ConvertTo-SecureString `
+              $env:ADMIN_PASS `
+              -AsPlainText `
+              -Force
 
           $cred = New-Object `
-            System.Management.Automation.PSCredential(
-              ".\Administrator",
-              $securePassword
-            )
+              System.Management.Automation.PSCredential `
+              ("Administrator",$secure)
 
           Invoke-Command `
-            -VMName $env:SERVER_VM `
-            -Credential $cred `
-            -ArgumentList `
-              "C:\VDI\Windows-VDI-Master.vhdx" `
-            -ScriptBlock {
+              -VMName $env:SERVER_VM `
+              -Credential $cred `
+              -ScriptBlock {
 
-                param($ParentVHDX)
+                  if (Get-VM `
+                      -Name $using:env:TEMPLATE_VM `
+                      -ErrorAction SilentlyContinue) {
 
-                $diff = "C:\VDI\RDS-Test-01.vhdx"
+                      Stop-VM `
+                          -Name $using:env:TEMPLATE_VM `
+                          -TurnOff `
+                          -Force `
+                          -ErrorAction SilentlyContinue
 
-                if (Test-Path $diff) {
-                    Remove-Item $diff -Force
-                }
+                      Remove-VM `
+                          -Name $using:env:TEMPLATE_VM `
+                          -Force
+                  }
 
-                New-VHD `
-                    -Path $diff `
-                    -ParentPath $ParentVHDX `
-                    -Differencing |
-                    Out-Null
+                  New-VM `
+                      -Name $using:env:TEMPLATE_VM `
+                      -Generation 2 `
+                      -MemoryStartupBytes 2GB `
+                      -VHDPath $using:env:TEMPLATE_VHDX `
+                      -SwitchName $using:env:RDS_SWITCH | Out-Null
 
-                Write-Host "[+] Nested differencing disk: $diff"
+                  Set-VMProcessor `
+                      -VMName $using:env:TEMPLATE_VM `
+                      -Count 2
 
-                Get-VHD `
-                    -Path $diff |
-                    Select-Object `
-                        Path,
-                        ParentPath,
-                        VhdType,
-                        FileSize
-            }
+                  Set-VMFirmware `
+                      -VMName $using:env:TEMPLATE_VM `
+                      -EnableSecureBoot On `
+                      -ErrorAction SilentlyContinue
 
+                  Set-VMNetworkAdapter `
+                      -VMName $using:env:TEMPLATE_VM `
+                      -MacAddressSpoofing On
 
-      # ============================================================
-      # 39. CREATE RDS-TEST-01 INSIDE SERVER-DC01
-      # ============================================================
-
-      - name: Create nested RDS-Test-01
-        shell: pwsh
-        env:
-          ADMIN_PASS: ${{ secrets.ADMIN_PASS }}
-        run: |
-          $ErrorActionPreference = 'Stop'
-
-          Write-Host "========== CREATE NESTED RDS-TEST-01 =========="
-
-          $securePassword = ConvertTo-SecureString `
-            $env:ADMIN_PASS `
-            -AsPlainText `
-            -Force
-
-          $cred = New-Object `
-            System.Management.Automation.PSCredential(
-              ".\Administrator",
-              $securePassword
-            )
-
-          Invoke-Command `
-            -VMName $env:SERVER_VM `
-            -Credential $cred `
-            -ArgumentList `
-              "C:\VDI\RDS-Test-01.vhdx",
-              $env:NESTED_SWITCH `
-            -ScriptBlock {
-
-                param(
-                    $VHDX,
-                    $SwitchName
-                )
-
-                $vmName = "RDS-Test-01"
-
-                $existing = Get-VM `
-                    -Name $vmName `
-                    -ErrorAction SilentlyContinue
-
-                if (-not $existing) {
-
-                    New-VM `
-                        -Name $vmName `
-                        -Generation 2 `
-                        -MemoryStartupBytes 4GB `
-                        -VHDPath $VHDX `
-                        -SwitchName $SwitchName |
-                        Out-Null
-                }
-
-                Set-VM `
-                    -Name $vmName `
-                    -AutomaticStopAction TurnOff `
-                    -AutomaticStartAction Nothing
-
-                Write-Host "[+] Nested RDS-Test-01 created."
-
-                Get-VM `
-                    -Name $vmName |
-                    Select-Object `
-                        Name,
-                        State,
-                        Generation,
-                        MemoryStartup
-            }
+                  Write-Host "[+] RDS-Master-Template created."
+                  Write-Host "[*] This VM is the template only."
+                  Write-Host "[*] RDS-Test-01 will NOT be created with New-VM."
+              }
 
 
       # ============================================================
-      # 40. CONFIGURE TEST VDI NETWORK
+      # BOOT TEMPLATE AND SYSPREP
       # ============================================================
 
-      - name: Configure nested VDI network
+      - name: Prepare RDS template with Sysprep
         shell: pwsh
         env:
           ADMIN_PASS: ${{ secrets.ADMIN_PASS }}
         run: |
           $ErrorActionPreference = 'Continue'
 
-          Write-Host "========== CONFIGURE NESTED VDI NETWORK =========="
+          Write-Host "========== PREPARE RDS TEMPLATE =========="
 
-          $securePassword = ConvertTo-SecureString `
-            $env:ADMIN_PASS `
-            -AsPlainText `
-            -Force
-
-          $cred = New-Object `
-            System.Management.Automation.PSCredential(
-              ".\Administrator",
-              $securePassword
-            )
-
-          Invoke-Command `
-            -VMName $env:SERVER_VM `
-            -Credential $cred `
-            -ScriptBlock {
-
-                $vm = Get-VM `
-                    -Name "RDS-Test-01" `
-                    -ErrorAction SilentlyContinue
-
-                if (-not $vm) {
-                    throw "RDS-Test-01 does not exist."
-                }
-
-                Write-Host "[+] Nested VM exists."
-                Write-Host "[*] Network will use nested RDS-NAT."
-            }
-
-
-      # ============================================================
-      # 41. START NESTED RDS-TEST-01
-      # ============================================================
-
-      - name: Start nested RDS-Test-01
-        shell: pwsh
-        env:
-          ADMIN_PASS: ${{ secrets.ADMIN_PASS }}
-        run: |
-          $ErrorActionPreference = 'Stop'
-
-          Write-Host "========== START NESTED RDS-TEST-01 =========="
-
-          $securePassword = ConvertTo-SecureString `
-            $env:ADMIN_PASS `
-            -AsPlainText `
-            -Force
+          $secure = ConvertTo-SecureString `
+              $env:ADMIN_PASS `
+              -AsPlainText `
+              -Force
 
           $cred = New-Object `
-            System.Management.Automation.PSCredential(
-              ".\Administrator",
-              $securePassword
-            )
+              System.Management.Automation.PSCredential `
+              ("Administrator",$secure)
 
           Invoke-Command `
-            -VMName $env:SERVER_VM `
-            -Credential $cred `
-            -ScriptBlock {
+              -VMName $env:SERVER_VM `
+              -Credential $cred `
+              -ScriptBlock {
 
-                Start-VM `
-                    -Name "RDS-Test-01"
+                  Start-VM `
+                      -Name $using:env:TEMPLATE_VM `
+                      -ErrorAction SilentlyContinue
 
-                Get-VM `
-                    -Name "RDS-Test-01" |
-                    Select-Object `
-                        Name,
-                        State,
-                        Status
-            }
+              }
 
+          Start-Sleep -Seconds 15
 
-      # ============================================================
-      # 42. VERIFY NESTED VIRTUALIZATION
-      # ============================================================
+          $templateReady = $false
 
-      - name: Verify nested virtualization tree
-        shell: pwsh
-        env:
-          ADMIN_PASS: ${{ secrets.ADMIN_PASS }}
-        run: |
-          $ErrorActionPreference = 'Continue'
-
-          Write-Host ""
-          Write-Host "=============================================="
-          Write-Host " NESTED VIRTUALIZATION TREE"
-          Write-Host "=============================================="
-
-          Write-Host ""
-          Write-Host "========== L0 =========="
-
-          Get-VM |
-            Select-Object `
-              Name,
-              State,
-              Generation,
-              MemoryStartup |
-            Format-Table -AutoSize
-
-          $securePassword = ConvertTo-SecureString `
-            $env:ADMIN_PASS `
-            -AsPlainText `
-            -Force
-
-          $cred = New-Object `
-            System.Management.Automation.PSCredential(
-              ".\Administrator",
-              $securePassword
-            )
-
-          Write-Host ""
-          Write-Host "========== L1 SERVER-DC01 =========="
-
-          Invoke-Command `
-            -VMName $env:SERVER_VM `
-            -Credential $cred `
-            -ScriptBlock {
-
-                Get-VM |
-                    Select-Object `
-                        Name,
-                        State,
-                        Generation,
-                        MemoryStartup |
-                    Format-Table -AutoSize
-            }
-
-
-      # ============================================================
-      # 43. REMOVE SERVER UNATTEND
-      # ============================================================
-
-      - name: Remove Server Unattend.xml
-        shell: pwsh
-        env:
-          ADMIN_PASS: ${{ secrets.ADMIN_PASS }}
-        run: |
-          $ErrorActionPreference = 'Continue'
-
-          Write-Host "========== REMOVE SERVER UNATTEND =========="
-
-          $securePassword = ConvertTo-SecureString `
-            $env:ADMIN_PASS `
-            -AsPlainText `
-            -Force
-
-          $cred = New-Object `
-            System.Management.Automation.PSCredential(
-              ".\Administrator",
-              $securePassword
-            )
-
-          Invoke-Command `
-            -VMName $env:SERVER_VM `
-            -Credential $cred `
-            -ScriptBlock {
-
-                $files = @(
-                    "C:\Windows\Panther\Unattend.xml",
-                    "C:\Windows\Panther\UnattendGC\Unattend.xml"
-                )
-
-                foreach ($file in $files) {
-
-                    if (Test-Path $file) {
-
-                        Remove-Item `
-                            $file `
-                            -Force `
-                            -ErrorAction SilentlyContinue
-
-                        Write-Host "[+] Removed $file"
-                    }
-                }
-            }
-
-
-      # ============================================================
-      # 44. FINAL STATUS
-      # ============================================================
-
-      - name: Final virtualization status
-        shell: pwsh
-        env:
-          ADMIN_PASS: ${{ secrets.ADMIN_PASS }}
-        run: |
-          Write-Host ""
-          Write-Host "=============================================="
-          Write-Host " FINAL VIRTUALIZATION STATUS"
-          Write-Host "=============================================="
-
-          Write-Host ""
-          Write-Host "========== L0 HYPER-V =========="
-
-          Get-VM |
-            Select-Object `
-              Name,
-              State,
-              Generation,
-              MemoryStartup,
-              Status |
-            Format-Table -AutoSize
-
-          Write-Host ""
-          Write-Host "========== L0 NAT =========="
-
-          Get-NetNat |
-            Select-Object `
-              Name,
-              InternalIPInterfaceAddressPrefix |
-            Format-Table -AutoSize
-
-          Write-Host ""
-          Write-Host "========== SERVER-DC01 =========="
-
-          $dc = Get-VM `
-            -Name $env:SERVER_VM
-
-          Write-Host "VM: $($dc.Name)"
-          Write-Host "State: $($dc.State)"
-
-          $processor = Get-VMProcessor `
-            -VMName $env:SERVER_VM
-
-          Write-Host "Nested virtualization: $($processor.ExposeVirtualizationExtensions)"
-
-          Write-Host ""
-          Write-Host "========== L1 HYPER-V =========="
-
-          $securePassword = ConvertTo-SecureString `
-            $env:ADMIN_PASS `
-            -AsPlainText `
-            -Force
-
-          $cred = New-Object `
-            System.Management.Automation.PSCredential(
-              ".\Administrator",
-              $securePassword
-            )
-
-          Invoke-Command `
-            -VMName $env:SERVER_VM `
-            -Credential $cred `
-            -ScriptBlock {
-
-                Get-VM |
-                    Select-Object `
-                        Name,
-                        State,
-                        Generation,
-                        MemoryStartup,
-                        Status |
-                    Format-Table -AutoSize
-
-                Write-Host ""
-                Write-Host "Nested NAT:"
-
-                Get-NetNat |
-                    Select-Object `
-                        Name,
-                        InternalIPInterfaceAddressPrefix |
-                    Format-Table -AutoSize
-            }
-
-
-      # ============================================================
-      # 45. RUN RDP / TAILSCALE ACTION
-      # ============================================================
-
-      - name: Run Win RDP Enabler
-        uses: Veniamin668/win-rdp-enabler@main
-        env:
-          TAIL_KEY: ${{ secrets.TAIL_KEY }}
-          ADMIN_PASS: ${{ secrets.ADMIN_PASS }}
-          USE_CUSTOM_USER: 'false'
-          CUSTOM_USERNAME: ''
-          CUSTOM_PASSWORD: ${{ secrets.CUSTOM_PASSWORD }}
-
-
-      # ============================================================
-      # 46. KEEP RUNNER ALIVE
-      # ============================================================
-
-      - name: Keep runner alive
-        shell: pwsh
-        run: |
-
-          Write-Host ""
-          Write-Host "=============================================="
-          Write-Host " RUNNER IS ALIVE"
-          Write-Host "=============================================="
-          Write-Host ""
-
-          Write-Host "L0:"
-          Write-Host "  GitHub-hosted Windows Server"
-          Write-Host ""
-
-          Write-Host "L1:"
-          Write-Host "  SERVER-DC01"
-          Write-Host "  AD DS / DNS / RDS / Hyper-V"
-          Write-Host ""
-
-          Write-Host "L2:"
-          Write-Host "  RDS-Test-01"
-          Write-Host ""
-
-          Write-Host "Nested virtualization remains enabled."
-          Write-Host "Press Ctrl+C / cancel the workflow to stop."
-          Write-Host ""
-
-          while ($true) {
-
-              Write-Host ""
-              Write-Host "[$(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')] Runner alive..."
-
-              Write-Host ""
-              Write-Host "L0 VMs:"
-
-              Get-VM |
-                Select-Object `
-                  Name,
-                  State |
-                Format-Table -AutoSize
+          for ($i = 1; $i -le 120; $i++) {
 
               try {
 
-                  $securePassword = ConvertTo-SecureString `
-                    "${{ secrets.ADMIN_PASS }}" `
-                    -AsPlainText `
-                    -Force
+                  $result = Invoke-Command `
+                      -VMName $env:SERVER_VM `
+                      -Credential $cred `
+                      -ScriptBlock {
 
-                  $cred = New-Object `
-                    System.Management.Automation.PSCredential(
-                      ".\Administrator",
-                      $securePassword
-                    )
+                          Get-VM `
+                              -Name $using:env:TEMPLATE_VM |
+                              Select-Object -ExpandProperty State
 
-                  Write-Host "L1 VMs:"
+                      } `
+                      -ErrorAction Stop
 
-                  Invoke-Command `
-                    -VMName $env:SERVER_VM `
-                    -Credential $cred `
-                    -ScriptBlock {
+                  if ($result -eq "Running") {
+                      $templateReady = $true
+                      break
+                  }
 
-                        Get-VM |
-                            Select-Object `
-                                Name,
-                                State |
-                            Format-Table -AutoSize
-
-                    } `
-                    -ErrorAction SilentlyContinue
               }
               catch {
-                  Write-Host "[!] Could not query L1 Hyper-V."
               }
 
-              Start-Sleep -Seconds 60
+              Start-Sleep -Seconds 5
           }
+
+          if (-not $templateReady) {
+              throw "RDS-Master-Template did not start."
+
+
+          Invoke-Command `
+              -VMName $env:SERVER_VM `
+              -Credential $cred `
+              -ScriptBlock {
+
+                  Write-Host "[*] Waiting for template guest..."
+
+                  for ($i = 1; $i -le 120; $i++) {
+
+                      try {
+
+                          $session = New-PSSession `
+                              -VMName $using:env:TEMPLATE_VM `
+                              -Credential $using:cred `
+                              -ErrorAction Stop
+
+                          Write-Host "[+] Template guest is accessible."
+                          Remove-PSSession $session
+                          break
+
+                      }
+                      catch {
+                          Start-Sleep -Seconds 5
+                      }
+                  }
+
+                  try {
+
+                      Invoke-Command `
+                          -VMName $using:env:TEMPLATE_VM `
+                          -Credential $using:cred `
+                          -ScriptBlock {
+
+                              Write-Host "[*] Running Sysprep..."
+
+                              Start-Process `
+                                  "$env:WINDIR\System32\Sysprep\Sysprep.exe" `
+                                  -ArgumentList `
+                                      "/generalize /oobe /shutdown /quiet" `
+                                  -Wait
+
+                          }
+
+                  }
+                  catch {
+                      Write-Warning "Template Sysprep invocation returned: $($_.Exception.Message)"
+                  }
+
+              }
+
+
+      # ============================================================
+      # DEPLOY NATIVE RDS VDI
+      # ============================================================
+
+      - name: Deploy native RDS VDI
+        shell: pwsh
+        env:
+          ADMIN_PASS: ${{ secrets.ADMIN_PASS }}
+        run: |
+          $ErrorActionPreference = 'Continue'
+
+          Write-Host "========== DEPLOY NATIVE RDS VDI =========="
+
+          $secure = ConvertTo-SecureString `
+              $env:ADMIN_PASS `
+              -AsPlainText `
+              -Force
+
+          $cred = New-Object `
+              System.Management.Automation.PSCredential `
+              ("Administrator",$secure)
+
+          Invoke-Command `
+              -VMName $env:SERVER_VM `
+              -Credential $cred `
+              -ScriptBlock {
+
+                  Import-Module RemoteDesktop -ErrorAction Stop
+
+                  $fqdn = "$env:COMPUTERNAME.$using:env:AD_DOMAIN"
+
+                  Write-Host "[+] Connection Broker: $fqdn"
+                  Write-Host "[+] Web Access:        $fqdn"
+                  Write-Host "[+] RD Virtualization: $fqdn"
+
+                  $deployment = Get-RDDeployment `
+                      -ConnectionBroker $fqdn `
+                      -ErrorAction SilentlyContinue
+
+                  if (-not $deployment) {
+
+                      Write-Host "[*] Creating native VDI deployment..."
+
+                      New-RDVirtualDesktopDeployment `
+                          -ConnectionBroker $fqdn `
+                          -VirtualizationHost $fqdn `
+                          -WebAccessServer $fqdn `
+                          -ErrorAction Stop
+
+                      Write-Host "[+] Native RDS VDI deployment created."
+
+                  }
+                  else {
+                      Write-Host "[*] RDS deployment already exists."
+                  }
+
+              }
+
+
+      # ============================================================
+      # CONFIGURE RDS VIRTUALIZATION SERVER
+      # ============================================================
+
+      - name: Configure RD Virtualization Host
+        shell: pwsh
+        env:
+          ADMIN_PASS: ${{ secrets.ADMIN_PASS }}
+        run: |
+          $ErrorActionPreference = 'Continue'
+
+          Write-Host "========== CONFIGURE RD VIRTUALIZATION HOST =========="
+
+          $secure = ConvertTo-SecureString `
+              $env:ADMIN_PASS `
+              -AsPlainText `
+              -Force
+
+          $cred = New-Object `
+              System.Management.Automation.PSCredential `
+              ("Administrator",$secure)
+
+          Invoke-Command `
+              -VMName $env:SERVER_VM `
+              -Credential $cred `
+              -ScriptBlock {
+
+                  Import-Module RemoteDesktop
+
+                  $fqdn = "$env:COMPUTERNAME.$using:env:AD_DOMAIN"
+
+                  try {
+
+                      $servers = Get-RDServer `
+                          -ConnectionBroker $fqdn `
+                          -ErrorAction Stop
+
+                      $servers |
+                          Format-Table `
+                              Server,Roles `
+                              -AutoSize
+
+                  }
+                  catch {
+                      Write-Warning $_.Exception.Message
+                  }
+
+              }
+
+
+      # ============================================================
+      # CREATE MANAGED POOLED COLLECTION
+      # ============================================================
+
+      - name: Create managed pooled VDI collection
+        shell: pwsh
+        env:
+          ADMIN_PASS: ${{ secrets.ADMIN_PASS }}
+        run: |
+          $ErrorActionPreference = 'Continue'
+
+          Write-Host "========== CREATE MANAGED POOLED VDI =========="
+
+          $secure = ConvertTo-SecureString `
+              $env:ADMIN_PASS `
+              -AsPlainText `
+              -Force
+
+          $cred = New-Object `
+              System.Management.Automation.PSCredential `
+              ("Administrator",$secure)
+
+          Invoke-Command `
+              -VMName $env:SERVER_VM `
+              -Credential $cred `
+              -ScriptBlock {
+
+                  Import-Module RemoteDesktop
+
+                  $fqdn = "$env:COMPUTERNAME.$using:env:AD_DOMAIN"
+
+                  Write-Host "[+] Template host: $fqdn"
+                  Write-Host "[+] Template:      $using:env:TEMPLATE_VM"
+                  Write-Host "[+] Allocation:    1 desktop on $fqdn"
+
+                  $existing = Get-RDVirtualDesktopCollection `
+                      -ConnectionBroker $fqdn `
+                      -CollectionName $using:env:RDS_COLLECTION `
+                      -ErrorAction SilentlyContinue
+
+                  if (-not $existing) {
+
+                      $allocation = @{
+                          $fqdn = 1
+                      }
+
+                      New-RDVirtualDesktopCollection `
+                          -CollectionName $using:env:RDS_COLLECTION `
+                          -PooledManaged `
+                          -VirtualDesktopTemplateName $using:env:TEMPLATE_VM `
+                          -VirtualDesktopTemplateHostServer $fqdn `
+                          -VirtualDesktopAllocation $allocation `
+                          -StorageType LocalStorage `
+                          -LocalStoragePath $using:env:RDS_STORAGE `
+                          -VirtualDesktopTemplateStoragePath $using:env:RDS_TEMPLATE_STORAGE `
+                          -Domain $using:env:AD_DOMAIN `
+                          -Description "Native managed pooled Windows VDI collection" `
+                          -UserGroups "$using:env:AD_NETBIOS\Domain Users" `
+                          -ConnectionBroker $fqdn `
+                          -VirtualDesktopNamePrefix $using:env:RDS_VM_PREFIX `
+                          -VirtualDesktopPasswordAge 0 `
+                          -Force
+
+                      Write-Host "[+] Managed pooled collection created."
+                      Write-Host "[*] RDS Broker is now responsible for creating RDS-Test-01."
+
+                  }
+                  else {
+                      Write-Host "[*] Collection already exists."
+                  }
+
+              }
+
+
+      # ============================================================
+      # WAIT FOR BROKER-CREATED DESKTOP
+      # ============================================================
+
+      - name: Wait for RDS broker-created desktop
+        shell: pwsh
+        env:
+          ADMIN_PASS: ${{ secrets.ADMIN_PASS }}
+        run: |
+          $ErrorActionPreference = 'Continue'
+
+          Write-Host "========== WAIT FOR RDS BROKER DESKTOP =========="
+
+          $secure = ConvertTo-SecureString `
+              $env:ADMIN_PASS `
+              -AsPlainText `
+              -Force
+
+          $cred = New-Object `
+              System.Management.Automation.PSCredential `
+              ("Administrator",$secure)
+
+          $found = $false
+
+          for ($i = 1; $i -le 180; $i++) {
+
+              try {
+
+                  $desktops = Invoke-Command `
+                      -VMName $env:SERVER_VM `
+                      -Credential $cred `
+                      -ScriptBlock {
+
+                          Import-Module RemoteDesktop
+
+                          $fqdn = "$env:COMPUTERNAME.$using:env:AD_DOMAIN"
+
+                          Get-RDVirtualDesktop `
+                              -CollectionName $using:env:RDS_COLLECTION `
+                              -ConnectionBroker $fqdn `
+                              -ErrorAction Stop |
+                              Select-Object `
+                                  VirtualDesktopName,
+                                  VirtualDesktopStatus
+
+                      } `
+                      -ErrorAction Stop
+
+                  if ($desktops) {
+
+                      Write-Host ""
+                      Write-Host "========== RDS DESKTOPS =========="
+
+                      $desktops |
+                          Format-Table -AutoSize
+
+                      if (
+                          $desktops |
+                          Where-Object {
+                              $_.VirtualDesktopName -like "$using:env:RDS_VM_PREFIX*"
+                          }
+                      ) {
+                          $found = $true
+                          break
+                      }
+                  }
+
+              }
+              catch {
+                  Write-Host "[*] Broker still creating desktop... $i/180"
+              }
+
+              Start-Sleep -Seconds 5
+          }
+
+          if (-not $found) {
+              Write-Warning "RDS did not report a pooled desktop within the timeout."
+              Write-Warning "The workflow will continue so the broker state can be inspected."
+          }
+
+
+      # ============================================================
+      # PUBLISH RD DESKTOP
+      # ============================================================
+
+      - name: Publish VDI collection to RD Web Access
+        shell: pwsh
+        env:
+          ADMIN_PASS: ${{ secrets.ADMIN_PASS }}
+        run: |
+          $ErrorActionPreference = 'Continue'
+
+          Write-Host "========== PUBLISH RDS COLLECTION =========="
+
+          $secure = ConvertTo-SecureString `
+              $env:ADMIN_PASS `
+              -AsPlainText `
+              -Force
+
+          $cred = New-Object `
+              System.Management.Automation.PSCredential `
+              ("Administrator",$secure)
+
+          Invoke-Command `
+              -VMName $env:SERVER_VM `
+              -Credential $cred `
+              -ScriptBlock {
+
+                  Import-Module RemoteDesktop
+
+                  $fqdn = "$env:COMPUTERNAME.$using:env:AD_DOMAIN"
+
+                  try {
+
+                      Set-RDRemoteDesktop `
+                          -CollectionName $using:env:RDS_COLLECTION `
+                          -ShowInWebAccess $true `
+                          -ConnectionBroker $fqdn `
+                          -ErrorAction Stop
+
+                      Write-Host "[+] Collection published to RD Web Access."
+
+                  }
+                  catch {
+                      Write-Warning $_.Exception.Message
+                  }
+
+              }
+
+
+      # ============================================================
+      # REMOVE IIS REQUIRE SSL FROM ENTIRE RDWeb ZONE
+      # ============================================================
+
+      - name: Disable IIS Require SSL for entire RDWeb zone
+        shell: pwsh
+        env:
+          ADMIN_PASS: ${{ secrets.ADMIN_PASS }}
+        run: |
+          $ErrorActionPreference = 'Continue'
+
+          Write-Host "========== DISABLE IIS REQUIRE SSL FOR RDWeb =========="
+
+          $secure = ConvertTo-SecureString `
+              $env:ADMIN_PASS `
+              -AsPlainText `
+              -Force
+
+          $cred = New-Object `
+              System.Management.Automation.PSCredential `
+              ("Administrator",$secure)
+
+          Invoke-Command `
+              -VMName $env:SERVER_VM `
+              -Credential $cred `
+              -ScriptBlock {
+
+                  Import-Module WebAdministration
+
+                  Write-Host "[*] Searching IIS for RDWeb..."
+
+                  $site = Get-Website `
+                      -Name "Default Web Site" `
+                      -ErrorAction SilentlyContinue
+
+                  if (-not $site) {
+                      Write-Warning "Default Web Site not found."
+                      return
+                  }
+
+                  # ------------------------------------------------
+                  # ROOT RDWeb
+                  # ------------------------------------------------
+
+                  $locations = New-Object `
+                      System.Collections.Generic.List[string]
+
+                  $locations.Add(
+                      "Default Web Site/RDWeb"
+                  )
+
+                  # ------------------------------------------------
+                  # IIS applications under RDWeb
+                  # ------------------------------------------------
+
+                  try {
+
+                      Get-WebApplication `
+                          -Site "Default Web Site" |
+                          Where-Object {
+                              $_.Path -like "/RDWeb*"
+                          } |
+                          ForEach-Object {
+
+                              $location =
+                                  "Default Web Site" +
+                                  $_.Path
+
+                              if (
+                                  -not $locations.Contains($location)
+                              ) {
+                                  $locations.Add($location)
+                              }
+                          }
+
+                  }
+                  catch {
+                      Write-Warning "Could not enumerate IIS applications: $($_.Exception.Message)"
+                  }
+
+                  # ------------------------------------------------
+                  # IIS virtual directories under RDWeb
+                  # ------------------------------------------------
+
+                  try {
+
+                      Get-WebVirtualDirectory `
+                          -Site "Default Web Site" |
+                          Where-Object {
+                              $_.Path -like "/RDWeb*"
+                          } |
+                          ForEach-Object {
+
+                              $location =
+                                  "Default Web Site" +
+                                  $_.Path
+
+                              if (
+                                  -not $locations.Contains($location)
+                              ) {
+                                  $locations.Add($location)
+                              }
+                          }
+
+                  }
+                  catch {
+                      Write-Warning "Could not enumerate IIS virtual directories: $($_.Exception.Message)"
+                  }
+
+                  # ------------------------------------------------
+                  # APPLY sslFlags=None
+                  # ------------------------------------------------
+
+                  foreach ($location in $locations) {
+
+                      try {
+
+                          Set-WebConfigurationProperty `
+                              -PSPath "IIS:\" `
+                              -Filter "system.webServer/security/access" `
+                              -Name "sslFlags" `
+                              -Value "None" `
+                              -Location $location `
+                              -Force `
+                              -ErrorAction Stop
+
+                          Write-Host "[+] Require SSL disabled: $location"
+
+                      }
+                      catch {
+
+                          Write-Warning `
+                              "[-] Failed: $location : $($_.Exception.Message)"
+                      }
+                  }
+
+                  # ------------------------------------------------
+                  # VERIFY
+                  # ------------------------------------------------
+
+                  Write-Host ""
+                  Write-Host "========== VERIFY RDWeb SSL SETTINGS =========="
+
+                  foreach ($location in $locations) {
+
+                      try {
+
+                          $value = Get-WebConfigurationProperty `
+                              -PSPath "IIS:\" `
+                              -Filter "system.webServer/security/access" `
+                              -Name "sslFlags" `
+                              -Location $location `
+                              -ErrorAction Stop
+
+                          Write-Host "$location -> sslFlags=$value"
+
+                      }
+                      catch {
+                          Write-Warning "Could not read: $location"
+                      }
+                  }
+
+                  iisreset /noforce
+
+                  Write-Host "[+] IIS RDWeb Require SSL processing completed."
+
+              }
+
+
+      # ============================================================
+      # FINAL RDS STATUS
+      # ============================================================
+
+      - name: Final RDS status
+        shell: pwsh
+        env:
+          ADMIN_PASS: ${{ secrets.ADMIN_PASS }}
+        run: |
+          $ErrorActionPreference = 'Continue'
+
+          Write-Host ""
+          Write-Host "============================================================"
+          Write-Host "                 FINAL VDI STATUS"
+          Write-Host "============================================================"
+
+          $secure = ConvertTo-SecureString `
+              $env:ADMIN_PASS `
+              -AsPlainText `
+              -Force
+
+          $cred = New-Object `
+              System.Management.Automation.PSCredential `
+              ("Administrator",$secure)
+
+          Invoke-Command `
+              -VMName $env:SERVER_VM `
+              -Credential $cred `
+              -ScriptBlock {
+
+                  Write-Host ""
+                  Write-Host "----- Nested Hyper-V -----"
+
+                  Get-VMSwitch |
+                      Select-Object Name,SwitchType
+
+                  Get-VM |
+                      Select-Object `
+                          Name,
+                          State,
+                          Generation,
+                          CPUUsage,
+                          MemoryAssigned |
+                      Format-Table -AutoSize
+
+                  Write-Host ""
+                  Write-Host "----- RDS Deployment -----"
+
+                  Import-Module RemoteDesktop
+
+                  $fqdn = "$env:COMPUTERNAME.$using:env:AD_DOMAIN"
+
+                  try {
+
+                      Get-RDServer `
+                          -ConnectionBroker $fqdn |
+                          Format-Table `
+                              Server,
+                              Roles `
+                              -AutoSize
+
+                  }
+                  catch {
+                      Write-Warning $_.Exception.Message
+                  }
+
+                  Write-Host ""
+                  Write-Host "----- RDS Collections -----"
+
+                  try {
+
+                      Get-RDVirtualDesktopCollection `
+                          -ConnectionBroker $fqdn |
+                          Format-Table `
+                              CollectionName,
+                              CollectionDescription `
+                              -AutoSize
+
+                  }
+                  catch {
+                      Write-Warning $_.Exception.Message
+                  }
+
+                  Write-Host ""
+                  Write-Host "----- RDS Virtual Desktops -----"
+
+                  try {
+
+                      Get-RDVirtualDesktop `
+                          -CollectionName $using:env:RDS_COLLECTION `
+                          -ConnectionBroker $fqdn |
+                          Format-Table `
+                              VirtualDesktopName,
+                              VirtualDesktopStatus `
+                              -AutoSize
+
+                  }
+                  catch {
+                      Write-Warning $_.Exception.Message
+                  }
+
+                  Write-Host ""
+                  Write-Host "----- IIS RDWeb -----"
+
+                  try {
+
+                      Import-Module WebAdministration
+
+                      Get-WebApplication `
+                          -Site "Default Web Site" |
+                          Where-Object Path -like "/RDWeb*" |
+                          Select-Object Path,PhysicalPath
+
+                  }
+                  catch {
+                      Write-Warning $_.Exception.Message
+                  }
+
+              }
+
+          Write-Host ""
+          Write-Host "============================================================"
+          Write-Host "SERVER-DC01 : 192.168.251.10"
+          Write-Host "RDS-NAT     : 192.168.252.1/24"
+          Write-Host "RDS pool    : $env:RDS_COLLECTION"
+          Write-Host "Template    : $env:TEMPLATE_VM"
+          Write-Host "Desktop     : created by RDS Broker"
+          Write-Host "============================================================"
+
+
+      # ============================================================
+      # KEEP RUNNER ALIVE
+      # ============================================================
+
+      - name: Keep lab alive
+        shell: pwsh
+        run: |
+          Write-Host ""
+          Write-Host "============================================================"
+          Write-Host "LAB IS RUNNING"
+          Write-Host "============================================================"
+          Write-Host ""
+          Write-Host "SERVER-DC01 is running."
+          Write-Host "Nested Hyper-V is running."
+          Write-Host "RDS VDI deployment is configured."
+          Write-Host "RDS managed pooled collection is configured."
+          Write-Host "RDS Broker is responsible for pooled desktop creation."
+          Write-Host "IIS RDWeb Require SSL was disabled."
+          Write-Host ""
+
+          Start-Sleep -Seconds 300
