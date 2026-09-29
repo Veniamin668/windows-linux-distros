@@ -34,8 +34,10 @@ jobs:
           # Запускаем docker-compose, передавая текущий HOSTNAME как переменную окружения
           HOSTNAME=$CURRENT_VM_HOSTNAME docker compose up -d gitlab
           
-      # 5. Динамически находим имена контейнеров, ждем healthy и регистрируем раннер
+      # 5. Динамически находим имена контейнеров, ждем веб-порт и регистрируем раннер
       - name: Wait for GitLab & Auto-Register Runner
+        env:
+          ADMIN_PASS: ${{ secrets.ADMIN_PASS }}
         run: |
           echo "Ищем динамическое имя запущенного контейнера GitLab..."
           GITLAB_CONTAINER_NAME=$(docker ps --filter "ancestor=gitlab/gitlab-ce:latest" --format "{{.Names}}")
@@ -47,21 +49,37 @@ jobs:
             sleep 15
           done
           
-          echo "Статус healthy получен! Генерируем токен..."
-          
-          echo "=== НАЧАЛЬНЫЙ ПАРОЛЬ ROOT ==="
-          docker exec $GITLAB_CONTAINER_NAME grep "Password:" /etc/gitlab/initial_root_password || true
-          echo "============================="
+          echo "Статус healthy получен! Даем PostgreSQL 30 секунд догрузить все таблицы..."
+          sleep 30
+
+          # АВТОМАТИЧЕСКАЯ СМЕНА ПАРОЛЯ ROOT
+          if [ ! -z "$ADMIN_PASS" ]; then
+            echo "Устанавливаем пароль root из секрета ADMIN_PASS..."
+            docker exec $GITLAB_CONTAINER_NAME gitlab-rails runner "u = User.root; u.password = '$ADMIN_PASS'; u.password_confirmation = '$ADMIN_PASS'; u.save!"
+            echo "Пароль root успешно изменен!"
+          else
+            echo "=== НАЧАЛЬНЫЙ ПАРОЛЬ ROOT ==="
+            docker exec $GITLAB_CONTAINER_NAME grep "Password:" /etc/gitlab/initial_root_password || true
+            echo "============================="
+          fi
 
           echo "Генерируем токен инстанс-раннера через базу данных..."
-          RUNNER_TOKEN=$(docker exec $GITLAB_CONTAINER_NAME gitlab-rails runner "r = Ci::Runner.create(runner_type: :instance_type, description: 'gha-auto-runner', active: true, run_untagged: true); r.ensure_runner_queue_value; puts r.token")
+          RUNNER_TOKEN=$(docker exec $GITLAB_CONTAINER_NAME gitlab-rails runner "r = Ci::Runner.create!(runner_type: 'instance_type', description: 'gha-auto-runner', active: true, run_untagged: true); puts r.token")
           echo "Получен токен: $RUNNER_TOKEN"
           
-          # Поднимаем контейнер раннера
+          # Поднимаем контейнер раннера (пусть скачивается в фоне)
           HOSTNAME=$(hostname) docker compose up -d gitlab-runner
+
+          echo "=== ПРОВЕРКА ДОСТУПНОСТИ API ==="
+          echo "Ждем, пока порт 8929 внутри контейнера GitLab РЕАЛЬНО откроется и начнет отвечать..."
           
-          echo "Токен готов, раннер запущен. Даем веб-серверу GitLab 30 секунд, чтобы открыть API-порт 8929..."
-          sleep 30
+          # Цикл бьет curl-ом во внутренний адрес, пока тот не вернет код ответа (хоть 200, хоть 302, главное не ошибка сети)
+          until docker exec $GITLAB_CONTAINER_NAME curl -s -I http://127.0.0 > /dev/null; do
+            echo "Порт 8929 всё еще закрыт (connection refused). Ждем 10 секунд..."
+            sleep 10
+          done
+          echo "УРА! API-порт 8929 открылся и отвечает! Даем 5 секунд на стабилизацию..."
+          sleep 5
 
           echo "Ищем динамическое имя запущенного контейнера раннера..."
           RUNNER_CONTAINER_NAME=$(docker ps --filter "ancestor=gitlab/gitlab-runner:latest" --format "{{.Names}}")
@@ -73,7 +91,7 @@ jobs:
           
           echo "Регистрируем раннер для хоста $CURRENT_VM_HOSTNAME с IP $CURRENT_VM_TS_IP"
 
-          # Регистрируем наш супер-раннер с динамическими именами
+          # Регистрируем наш супер-раннер
           docker exec $RUNNER_CONTAINER_NAME gitlab-runner register \
             --non-interactive \
             --url "http://${GITLAB_CONTAINER_NAME}:8929" \
