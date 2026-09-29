@@ -14,7 +14,7 @@ jobs:
 
       # 2. Коннектимся к Tailscale по твоему ключу tskey-...
       - name: Connect to Tailscale Network
-        uses: tailscale/github-action@v2
+        uses: tailscale/github-action@v4
         with:
           authkey: ${{ secrets.TAIL_KEY }}
 
