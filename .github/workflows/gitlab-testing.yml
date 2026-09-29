@@ -94,7 +94,7 @@ jobs:
           docker exec $RUNNER_CONTAINER_NAME gitlab-runner register \
             --non-interactive \
             --url "http://${GITLAB_CONTAINER_NAME}:80" \
-            --registration-token "$RUNNER_TOKEN" \
+            --token "$RUNNER_TOKEN" \
             --executor "docker" \
             --docker-image "archlinux:latest" \
             --description "GHA-Dynamic-Runner" \
