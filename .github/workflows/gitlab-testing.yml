@@ -74,10 +74,10 @@ jobs:
           echo "Ждем, пока порт 8929 внутри контейнера GitLab РЕАЛЬНО откроется и начнет отвечать..."
           
           until docker exec $GITLAB_CONTAINER_NAME curl -s -I http://127.0.0 > /dev/null; do
-            echo "Порт 8929 всё еще закрыт (connection refused). Ждем 10 секунд..."
+            echo "Порт 80 всё еще закрыт (connection refused). Ждем 10 секунд..."
             sleep 10
           done
-          echo "УРА! API-порт 8929 открылся и отвечает! Даем 5 секунд на стабилизацию..."
+          echo "УРА! API-порт 80 открылся и отвечает! Даем 5 секунд на стабилизацию..."
           sleep 5
 
           echo "Ищем динамическое имя запущенного контейнера раннера..."
@@ -93,7 +93,7 @@ jobs:
           # Регистрируем наш супер-раннер
           docker exec $RUNNER_CONTAINER_NAME gitlab-runner register \
             --non-interactive \
-            --url "http://${GITLAB_CONTAINER_NAME}:8929" \
+            --url "http://${GITLAB_CONTAINER_NAME}:80" \
             --registration-token "$RUNNER_TOKEN" \
             --executor "docker" \
             --docker-image "archlinux:latest" \
