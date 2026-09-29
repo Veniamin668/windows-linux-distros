@@ -1,0 +1,40 @@
+version: '3.8'
+
+services:
+  gitlab:
+    image: 'gitlab/gitlab-ce:latest'
+    restart: always
+    hostname: '${HOSTNAME}' 
+    environment:
+      GITLAB_OMNIBUS_CONFIG: |
+        external_url 'http://${HOSTNAME}:80'
+        # Дополнительные настройки при необходимости
+    ports:
+      - '8929:8929'
+      - '443:443'
+      - '80:80'
+      - '2222:22'
+    volumes:
+      - './config:/etc/gitlab'
+      - './logs:/var/log/gitlab'
+      - './data:/var/opt/gitlab'
+    networks:
+      - gitlab-net
+
+  gitlab-runner:
+    image: 'gitlab/gitlab-runner:latest'
+    restart: always
+    container_name: gitlab-runner
+    privileged: true
+    depends_on:
+      - gitlab
+    volumes:
+      - './runner-config:/etc/gitlab-runner'
+      - '/var/run/docker.sock:/var/run/docker.sock' # Для запуска дочерних контейнеров
+      - '/sys/fs/cgroup:/sys/fs/cgroup:rw'
+    networks:
+      - gitlab-net
+
+networks:
+  gitlab-net:
+    driver: bridge
