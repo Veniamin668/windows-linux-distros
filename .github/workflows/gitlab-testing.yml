@@ -1,0 +1,93 @@
+name: Deploy Dynamic GitLab Cluster
+on:
+  schedule:
+    - cron: '0 */5 * * *' # Карусель каждые 5 часов
+  workflow_dispatch: # Кнопка для ручного пинка
+
+jobs:
+  run-cluster:
+    runs-on: ubuntu-latest
+    steps:
+      # 1. Скачиваем репозиторий с твоим docker-compose.yml
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      # 2. Коннектимся к Tailscale по твоему ключу tskey-...
+      - name: Connect to Tailscale Network
+        uses: tailscale/github-action@v2
+        with:
+          authkey: ${{ secrets.TAIL_KEY }}
+
+      # 3. Создаем папки и права
+      - name: Prepare Workspace Directories
+        run: |
+          mkdir -p config data logs runner-config
+          chmod -R 777 runner-config
+
+      # 4. Динамически вычисляем HOSTNAME текущего раннера и поднимаем GitLab
+      - name: Start GitLab Core
+        run: |
+          # Вытаскиваем реальное имя этой конкретной виртуалки GHA
+          CURRENT_VM_HOSTNAME=$(hostname)
+          echo "Текущий динамический hostname: $CURRENT_VM_HOSTNAME"
+          
+          # Запускаем docker-compose, передавая текущий HOSTNAME как переменную окружения
+          HOSTNAME=$CURRENT_VM_HOSTNAME docker compose up -d gitlab
+
+      # 5. Ждем healthy и регистрируем раннер с динамическим IP
+      - name: Wait for GitLab & Auto-Register Runner
+        run: |
+          echo "Ожидаем, пока GitLab инициализируется и станет healthy..."
+          until [ "$(docker inspect --format='{{.State.Health.Status}}' gitlab-gitlab-1)" == "healthy" ]; do
+            echo "GitLab всё еще поднимается, ждем 15 секунд..."
+            sleep 15
+          done
+          echo "GitLab полностью готов!"
+
+          # Выводим сгенерированный пароль root прямо в логи гитхаба
+          echo "=== НАЧАЛЬНЫЙ ПАРОЛЬ ROOT ==="
+          docker exec gitlab-gitlab-1 grep "Password:" /etc/gitlab/initial_root_password || true
+          echo "============================="
+
+          # Генерируем токен через рельсы гитлаба
+          RUNNER_TOKEN=$(docker exec gitlab-gitlab-1 gitlab-rails runner "r = Runner.create(runner_type: :instance_type, description: 'gha-auto-runner', active: true, run_untagged: true); r.ensure_runner_queue_value; puts r.token")
+          
+          # Поднимаем контейнер раннера, прокидывая имя хоста
+          HOSTNAME=$(hostname) docker compose up -d gitlab-runner
+          sleep 5
+
+          # МАГИЯ ДИНАМИКИ: вытаскиваем текущее имя хоста и текущий IP из Tailscale!
+          CURRENT_VM_HOSTNAME=$(hostname)
+          CURRENT_VM_TS_IP=$(tailscale ip -4) # Вытащит чистый 100.x.x.x адрес этой виртуалки
+          
+          echo "Регистрируем раннер для хоста $CURRENT_VM_HOSTNAME с IP $CURRENT_VM_TS_IP"
+
+          # Регистрируем наш супер-раннер на автомате с динамическими данными
+          docker exec gitlab-runner gitlab-runner register \
+            --non-interactive \
+            --url "http://gitlab-gitlab-1:8929" \
+            --registration-token "$RUNNER_TOKEN" \
+            --executor "docker" \
+            --docker-image "archlinux:latest" \
+            --description "GHA-Dynamic-Runner" \
+            --docker-privileged=true \
+            --docker-volumes "/cache" \
+            --docker-volumes "/sys/fs/cgroup:/sys/fs/cgroup:rw" \
+            --docker-extra-hosts "${CURRENT_VM_HOSTNAME}:${CURRENT_VM_TS_IP}"
+
+          echo "Раннер успешно привязан к динамическому хосту!"
+
+      # 6. Крутим карусель 5 часов с пингами консоли
+      - name: Keep Infrastructure Alive
+        run: |
+          echo "Карусель запущена на полную мощность. Погнали!"
+          for i in {1..30}; do
+            echo "Keep-alive: Кластер GitLab активен. Прошло $((i * 10)) минут."
+            sleep 600
+          done
+
+      # 7. Финал — тушим за собой контейнеры
+      - name: Teardown Infrastructure
+        if: always()
+        run: |
+          docker compose down
