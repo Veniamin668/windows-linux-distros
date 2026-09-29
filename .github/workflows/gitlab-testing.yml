@@ -34,11 +34,16 @@ jobs:
           # Запускаем docker-compose, передавая текущий HOSTNAME как переменную окружения
           HOSTNAME=$CURRENT_VM_HOSTNAME docker compose up -d gitlab
 
-      # 5. Ждем healthy и регистрируем раннер с динамическим IP
+      # 5. Динамически находим имена контейнеров, ждем healthy и регистрируем раннер
       - name: Wait for GitLab & Auto-Register Runner
         run: |
+          echo "Ищем динамическое имя запущенного контейнера GitLab..."
+          # Вытаскиваем точное имя контейнера, созданного из образа gitlab-ce
+          GITLAB_CONTAINER_NAME=$(docker ps --filter "ancestor=gitlab/gitlab-ce:latest" --format "{{.Names}}")
+          echo "Динамически определено имя контейнера GitLab: $GITLAB_CONTAINER_NAME"
+          
           echo "Ожидаем, пока GitLab инициализируется и станет healthy..."
-          until [ "$(docker inspect --format='{{.State.Health.Status}}' gitlab-gitlab-1)" == "healthy" ]; do
+          until [ "$(docker inspect --format='{{.State.Health.Status}}' $GITLAB_CONTAINER_NAME)" == "healthy" ]; do
             echo "GitLab всё еще поднимается, ждем 15 секунд..."
             sleep 15
           done
@@ -46,26 +51,32 @@ jobs:
 
           # Выводим сгенерированный пароль root прямо в логи гитхаба
           echo "=== НАЧАЛЬНЫЙ ПАРОЛЬ ROOT ==="
-          docker exec gitlab-gitlab-1 grep "Password:" /etc/gitlab/initial_root_password || true
+          docker exec $GITLAB_CONTAINER_NAME grep "Password:" /etc/gitlab/initial_root_password || true
           echo "============================="
 
-          # Генерируем токен через рельсы гитлаба
-          RUNNER_TOKEN=$(docker exec gitlab-gitlab-1 gitlab-rails runner "r = Runner.create(runner_type: :instance_type, description: 'gha-auto-runner', active: true, run_untagged: true); r.ensure_runner_queue_value; puts r.token")
+          # Генерируем токен через рельсы гитлаба, используя динамическое имя контейнера
+          RUNNER_TOKEN=$(docker exec $GITLAB_CONTAINER_NAME gitlab-rails runner "r = Runner.create(runner_type: :instance_type, description: 'gha-auto-runner', active: true, run_untagged: true); r.ensure_runner_queue_value; puts r.token")
+          echo "Получен токен: $RUNNER_TOKEN"
           
-          # Поднимаем контейнер раннера, прокидывая имя хоста
+          # Поднимаем контейнер раннера, передавая имя хоста виртуалки
           HOSTNAME=$(hostname) docker compose up -d gitlab-runner
           sleep 5
 
+          echo "Ищем динамическое имя запущенного контейнера раннера..."
+          # Точно так же вытаскиваем точное имя контейнера раннера
+          RUNNER_CONTAINER_NAME=$(docker ps --filter "ancestor=gitlab/gitlab-runner:latest" --format "{{.Names}}")
+          echo "Динамически определено имя контейнера Runner: $RUNNER_CONTAINER_NAME"
+
           # МАГИЯ ДИНАМИКИ: вытаскиваем текущее имя хоста и текущий IP из Tailscale!
           CURRENT_VM_HOSTNAME=$(hostname)
-          CURRENT_VM_TS_IP=$(tailscale ip -4) # Вытащит чистый 100.x.x.x адрес этой виртуалки
+          CURRENT_VM_TS_IP=$(tailscale ip -4)
           
           echo "Регистрируем раннер для хоста $CURRENT_VM_HOSTNAME с IP $CURRENT_VM_TS_IP"
 
-          # Регистрируем наш супер-раннер на автомате с динамическими данными
-          docker exec gitlab-runner gitlab-runner register \
+          # Регистрируем наш супер-раннер, используя динамические имена контейнеров
+          docker exec $RUNNER_CONTAINER_NAME gitlab-runner register \
             --non-interactive \
-            --url "http://gitlab-gitlab-1:8929" \
+            --url "http://${GITLAB_CONTAINER_NAME}:8929" \
             --registration-token "$RUNNER_TOKEN" \
             --executor "docker" \
             --docker-image "archlinux:latest" \
