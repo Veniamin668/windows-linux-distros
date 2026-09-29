@@ -58,7 +58,8 @@ jobs:
           echo "============================="
 
           echo "Генерируем токен инстанс-раннера через базу данных..."
-          RUNNER_TOKEN=$(docker exec $GITLAB_CONTAINER_NAME gitlab-rails runner "r = Runner.create(runner_type: :instance_type, description: 'gha-auto-runner', active: true, run_untagged: true); r.ensure_runner_queue_value; puts r.token")
+          # ИСПРАВЛЕНО: Используем Ci::Runner вместо Runner
+          RUNNER_TOKEN=$(docker exec $GITLAB_CONTAINER_NAME gitlab-rails runner "r = Ci::Runner.create(runner_type: :instance_type, description: 'gha-auto-runner', active: true, run_untagged: true); r.ensure_runner_queue_value; puts r.token")
           echo "Получен токен: $RUNNER_TOKEN"
           
           # Поднимаем контейнер раннера, передавая имя хоста виртуалки
@@ -70,7 +71,7 @@ jobs:
           RUNNER_CONTAINER_NAME=$(docker ps --filter "ancestor=gitlab/gitlab-runner:latest" --format "{{.Names}}")
           echo "Динамически определено имя контейнера Runner: $RUNNER_CONTAINER_NAME"
 
-          # МAГИЯ ДИНAМИКИ: вытаскиваем текущее имя хоста и текущий IP из Tailscale!
+          # МАГИЯ ДИНАМИКИ: вытаскиваем текущее имя хоста и текущий IP из Tailscale!
           CURRENT_VM_HOSTNAME=$(hostname)
           CURRENT_VM_TS_IP=$(tailscale ip -4)
           
