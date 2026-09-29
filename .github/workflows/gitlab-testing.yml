@@ -1,7 +1,5 @@
 name: Deploy Dynamic GitLab Cluster test
 on:
-  schedule:
-    - cron: '0 */5 * * *' # Карусель каждые 5 часов
   workflow_dispatch: # Кнопка для ручного пинка
 
 jobs:
