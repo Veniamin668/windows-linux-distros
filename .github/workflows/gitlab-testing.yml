@@ -33,7 +33,7 @@ jobs:
           
           # Запускаем docker-compose, передавая текущий HOSTNAME как переменную окружения
           HOSTNAME=$CURRENT_VM_HOSTNAME docker compose up -d gitlab
-
+          
       # 5. Динамически находим имена контейнеров, ждем healthy и регистрируем раннер
       - name: Wait for GitLab & Auto-Register Runner
         run: |
@@ -42,19 +42,22 @@ jobs:
           GITLAB_CONTAINER_NAME=$(docker ps --filter "ancestor=gitlab/gitlab-ce:latest" --format "{{.Names}}")
           echo "Динамически определено имя контейнера GitLab: $GITLAB_CONTAINER_NAME"
           
-          echo "Ожидаем, пока GitLab инициализируется и станет healthy..."
+          echo "Ожидаем, пока веб-сервер GitLab выдаст статус healthy..."
           until [ "$(docker inspect --format='{{.State.Health.Status}}' $GITLAB_CONTAINER_NAME)" == "healthy" ]; do
             echo "GitLab всё еще поднимается, ждем 15 секунд..."
             sleep 15
           done
-          echo "GitLab полностью готов!"
+          
+          echo "Статус healthy получен! Даем PostgreSQL 45 секунд догрузить все таблицы и миграции базы..."
+          sleep 45
+          echo "GitLab полностью готов к работе!"
 
           # Выводим сгенерированный пароль root прямо в логи гитхаба
           echo "=== НАЧАЛЬНЫЙ ПАРОЛЬ ROOT ==="
           docker exec $GITLAB_CONTAINER_NAME grep "Password:" /etc/gitlab/initial_root_password || true
           echo "============================="
 
-          # Генерируем токен через рельсы гитлаба, используя динамическое имя контейнера
+          echo "Генерируем токен инстанс-раннера через базу данных..."
           RUNNER_TOKEN=$(docker exec $GITLAB_CONTAINER_NAME gitlab-rails runner "r = Runner.create(runner_type: :instance_type, description: 'gha-auto-runner', active: true, run_untagged: true); r.ensure_runner_queue_value; puts r.token")
           echo "Получен токен: $RUNNER_TOKEN"
           
@@ -67,7 +70,7 @@ jobs:
           RUNNER_CONTAINER_NAME=$(docker ps --filter "ancestor=gitlab/gitlab-runner:latest" --format "{{.Names}}")
           echo "Динамически определено имя контейнера Runner: $RUNNER_CONTAINER_NAME"
 
-          # МАГИЯ ДИНАМИКИ: вытаскиваем текущее имя хоста и текущий IP из Tailscale!
+          # МAГИЯ ДИНAМИКИ: вытаскиваем текущее имя хоста и текущий IP из Tailscale!
           CURRENT_VM_HOSTNAME=$(hostname)
           CURRENT_VM_TS_IP=$(tailscale ip -4)
           
