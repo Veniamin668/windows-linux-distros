@@ -40,17 +40,16 @@ jobs:
       fail-fast: false
       matrix:
         os_name: [ 'archlinux', 'debian' ]
-        # Объявляем run на верхнем уровне матрицы
-        run: [ true, false ] 
+        is_enabled: [ true ] 
         include:
           - os_name: 'archlinux'
             os_image: 'archlinux:latest'
-            run: ${{ inputs.launch_arch }}
+            is_enabled: ${{ inputs.launch_arch }}
           
           - os_name: 'debian'
             os_image: 'debian:bookworm-slim'
-            run: ${{ inputs.launch_debian }}
-        
+            is_enabled: ${{ inputs.launch_debian }}
+
         # Теперь GitHub знает про ключ run и успешно отфильтрует false
         exclude:
           - run: false
