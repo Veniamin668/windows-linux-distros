@@ -52,10 +52,10 @@ jobs:
           echo "Статус healthy получен! Даем PostgreSQL 30 секунд догрузить все таблицы..."
           sleep 30
 
-          # АВТОМАТИЧЕСКАЯ СМЕНА ПАРОЛЯ ROOT
+          # АВТОМАТИЧЕСКАЯ СМЕНА ПАРОЛЯ ROOTЧЕРЕЗ USER.FIRST
           if [ ! -z "$ADMIN_PASS" ]; then
             echo "Устанавливаем пароль root из секрета ADMIN_PASS..."
-            docker exec $GITLAB_CONTAINER_NAME gitlab-rails runner "u = User.root; u.password = '$ADMIN_PASS'; u.password_confirmation = '$ADMIN_PASS'; u.save!"
+            docker exec $GITLAB_CONTAINER_NAME gitlab-rails runner "u = User.first; u.password = '$ADMIN_PASS'; u.password_confirmation = '$ADMIN_PASS'; u.save!"
             echo "Пароль root успешно изменен!"
           else
             echo "=== НАЧАЛЬНЫЙ ПАРОЛЬ ROOT ==="
@@ -67,13 +67,12 @@ jobs:
           RUNNER_TOKEN=$(docker exec $GITLAB_CONTAINER_NAME gitlab-rails runner "r = Ci::Runner.create!(runner_type: 'instance_type', description: 'gha-auto-runner', active: true, run_untagged: true); puts r.token")
           echo "Получен токен: $RUNNER_TOKEN"
           
-          # Поднимаем контейнер раннера (пусть скачивается в фоне)
+          # Поднимаем контейнер раннера
           HOSTNAME=$(hostname) docker compose up -d gitlab-runner
 
           echo "=== ПРОВЕРКА ДОСТУПНОСТИ API ==="
           echo "Ждем, пока порт 8929 внутри контейнера GitLab РЕАЛЬНО откроется и начнет отвечать..."
           
-          # Цикл бьет curl-ом во внутренний адрес, пока тот не вернет код ответа (хоть 200, хоть 302, главное не ошибка сети)
           until docker exec $GITLAB_CONTAINER_NAME curl -s -I http://127.0.0 > /dev/null; do
             echo "Порт 8929 всё еще закрыт (connection refused). Ждем 10 секунд..."
             sleep 10
