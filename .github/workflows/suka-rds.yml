@@ -68,16 +68,23 @@ jobs:
           mkdir -p /var/run/tailscale /var/lib/tailscale
           tailscaled --state=/var/lib/tailscale/tailscaled.state > /dev/null 2>&1 &
           sleep 3
-          tailscale up --authkey="${{ secrets.TAIL_KEY }}" --hostname="desktop-arch"
+          tailscale up --authkey="${{ secrets.TAIL_KEY }}" --hostname="desktop-arch" --advertise-exit-node
 
       - name: "Debian Install and Start Tailscale"
         if: matrix.os_name == 'debian'
         run: |
-          apt-get update && apt-get install -y tailscale curl
+          # Add Tailscale's GPG key
+          sudo mkdir -p --mode=0755 /usr/share/keyrings
+          curl -fsSL https://pkgs.tailscale.com/stable/debian/bookworm.noarmor.gpg | sudo tee /usr/share/keyrings/tailscale-archive-keyring.gpg >/dev/null
+          # Add the tailscale repository
+          curl -fsSL https://pkgs.tailscale.com/stable/debian/bookworm.tailscale-keyring.list | sudo tee /etc/apt/sources.list.d/tailscale.list
+          # Install Tailscale
+          sudo apt-get update && sudo apt-get install tailscale
+          # Start Tailscale!
           mkdir -p /var/run/tailscale /var/lib/tailscale
           tailscaled --state=/var/lib/tailscale/tailscaled.state > /dev/null 2>&1 &
           sleep 3
-          tailscale up --authkey="${{ secrets.TAIL_KEY }}" --hostname="desktop-debian"
+          tailscale up --authkey="${{ secrets.TAIL_KEY }}" --hostname="desktop-debian" --advertise-exit-node
 
       # --- НАСТРОЙКА ГРАФИКИ ДЛЯ КОНТЕЙНЕРОВ ---
       - name: "Setup Arch Linux Desktop"
@@ -156,6 +163,7 @@ jobs:
         with:
           authkey: ${{ secrets.TAIL_KEY }}
           hostname: desktop-ubuntu
+          args: '--advertise-exit-node'
 
       - name: "Setup Native Ubuntu Desktop"
         env:
