@@ -102,8 +102,8 @@ jobs:
           # Берем имя ОС из матрицы и сразу корректируем тег под стандарты образов LXD
           OS_TARGET="${{ matrix.os_name }}"
           [ "$OS_TARGET" = "debian" ] && OS_TARGET="debian/12"
-          [ "$OS_TARGET" = "alpine" ] && OS_TARGET="alpine/latest"
-          [ "$OS_TARGET" = "fedora" ] && OS_TARGET="fedora/40"
+          [ "$OS_TARGET" = "alpine" ] && OS_TARGET="alpine"
+          [ "$OS_TARGET" = "fedora" ] && OS_TARGET="fedora"
           
           # Запускаем контейнер одной строкой без всяких громоздких if/elif/fi
           sudo lxc launch images:$OS_TARGET desktop-container
@@ -156,6 +156,7 @@ jobs:
             sudo lxc exec desktop-container -- sudo mkdir -p --mode=0755 /usr/share/keyrings
             sudo lxc exec desktop-container -- curl -fsSL https://pkgs.tailscale.com/stable/debian/bookworm.noarmor.gpg | sudo lxc exec desktop-container -- sudo tee /usr/share/keyrings/tailscale-archive-keyring.gpg >/dev/null
             sudo lxc exec desktop-container -- curl -fsSL https://pkgs.tailscale.com/stable/debian/bookworm.tailscale-keyring.list | sudo lxc exec desktop-container -- sudo tee /etc/apt/sources.list.d/tailscale.list
+            sudo lxc exec desktop-container -- sudo apt-get update
             sudo lxc exec desktop-container -- sudo apt-get install tailscale -y
           fi
           
