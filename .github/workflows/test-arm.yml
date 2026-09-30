@@ -49,6 +49,7 @@ jobs:
           npm-del: 'true'
           wsl-rename: 'true'
           optimize: 'true'
+          visual_del: 'true'
 
       - name: 4. wait session (6 hours)
         run: |
