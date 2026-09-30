@@ -4,7 +4,12 @@ on:
   workflow_dispatch:
     inputs:
       launch_arch:
-        description: 'Запустить Arch Linux (В контейнере)?'
+        description: 'Запустить Arch Linux (В LXC Контейнере)?'
+        required: true
+        type: boolean
+        default: false
+      launch_debian:
+        description: 'Запустить Debian (В LXC Контейнере)?'
         required: true
         type: boolean
         default: false
@@ -13,162 +18,169 @@ on:
         required: true
         type: boolean
         default: true
-      launch_debian:
-        description: 'Запустить Debian (В контейнере)?'
-        required: true
-        type: boolean
-        default: false
       desktop_env:
         description: 'Выберите графическую оболочку (DE)'
         required: true
         default: 'kde'
         type: choice
         options:
-          - 'gnome'
           - 'kde'
+          - 'gnome'
           - 'xfce'
 
 jobs:
   # ==========================================
-  # ДЖОБА 1: ДЛЯ СИСТЕМ В КОНТЕЙНЕРАХ (ARCH / DEBIAN)
+  # ДЖОБА 1: ДЛЯ СИСТЕМ В LXC КОНТЕЙНЕРАХ (ARCH / DEBIAN)
   # ==========================================
   deploy-containers:
     runs-on: ubuntu-latest
     timeout-minutes: 360
-    # Джоба запустится, только если выбран хотя бы один контейнер
     if: ${{ inputs.launch_arch == true || inputs.launch_debian == true }}
     
     strategy:
       fail-fast: false
       matrix:
         os_name: [ 'archlinux', 'debian' ]
-        include:
-          - os_name: 'archlinux'
-            os_image: 'archlinux:latest'
-          - os_name: 'debian'
-            os_image: 'debian:bookworm-slim'
-
-    container:
-      image: ${{ matrix.os_image }}
-      options: --privileged --device=/dev/kvm --device=/dev/net/tun --cap-add=NET_ADMIN
 
     steps:
-    
-      # --- СТАРТ СЕТИ И СЛУЖБ ДЛЯ КОНТЕЙНЕРОВ ---
-      - name: "Arch Install and Start Tailscale"
-        if: matrix.os_name == 'archlinux' && inputs.launch_arch == true
+      # Пропускаем дистрибутив, если галочка для него не установлена
+      - name: "Check if OS is enabled"
+        id: check
         run: |
-          pacman -Syu --noconfirm tailscale curl sudo
-          mkdir -p /var/run/tailscale /var/lib/tailscale
-          tailscaled --state=/var/lib/tailscale/tailscaled.state > /dev/null 2>&1 &
-          sleep 3
-          tailscale up --authkey="${{ secrets.TAIL_KEY }}" --hostname="desktop-arch" --advertise-exit-node
-
-      - name: "Debian Install and Start Tailscale"
-        if: matrix.os_name == 'debian' && inputs.launch_debian == true
-        run: |
-          # Add Tailscale's GPG key
-          sudo mkdir -p --mode=0755 /usr/share/keyrings
-          curl -fsSL https://pkgs.tailscale.com/stable/debian/bookworm.noarmor.gpg | sudo tee /usr/share/keyrings/tailscale-archive-keyring.gpg >/dev/null
-          # Add the tailscale repository
-          curl -fsSL https://pkgs.tailscale.com/stable/debian/bookworm.tailscale-keyring.list | sudo tee /etc/apt/sources.list.d/tailscale.list
-          # Install Tailscale
-          sudo apt-get update && sudo apt-get install tailscale
-          mkdir -p /var/run/tailscale /var/lib/tailscale
-          tailscaled --state=/var/lib/tailscale/tailscaled.state > /dev/null 2>&1 &
-          sleep 3
-          tailscale up --authkey="${{ secrets.TAIL_KEY }}" --hostname="desktop-debian" --advertise-exit-node
-
-      # --- НАСТРОЙКА ГРАФИКИ И ПРАВ ДЛЯ КОНТЕЙНЕРОВ ---
-      - name: "Setup Arch Linux Desktop"
-        if: matrix.os_name == 'archlinux' && inputs.launch_arch == true
-        run: |
-          pacman -S --noconfirm base-devel git dbus xorg-server xorg-apps nano
-          if [ "${{ inputs.desktop_env }}" = "kde" ]; then
-            pacman -S --noconfirm plasma-desktop konsole plasma-nm
-            DE_START="exec dbus-launch --exit-with-session startplasma-x11"
-          elif [ "${{ inputs.desktop_env }}" = "gnome" ]; then
-            pacman -S --noconfirm gnome-shell gdm
-            DE_START="exec dbus-launch --exit-with-session gnome-session"
+          if [ "${{ matrix.os_name }}" = "archlinux" ] && [ "${{ inputs.launch_arch }}" != "true" ]; then
+            echo "skip=true" >> $GITHUB_OUTPUT
+          elif [ "${{ matrix.os_name }}" = "debian" ] && [ "${{ inputs.launch_debian }}" != "true" ]; then
+            echo "skip=true" >> $GITHUB_OUTPUT
           else
-            pacman -S --noconfirm xfce4 xfce4-goodies
-            DE_START="exec startxfce4"
+            echo "skip=false" >> $GITHUB_OUTPUT
           fi
-          
-          # Создание юзера cloud с добавлением в системные и графические группы
-          useradd -m -G wheel,tty,video,audio -s /bin/bash cloud
-          echo "cloud:cloud" | chpasswd
-          echo "cloud ALL=(ALL) NOPASSWD: ALL" >> /etc/sudoers
-          
-          # Выдаем xrdp доступ к терминалам и видеоустройствам
-          usermod -a -G tty,video,audio xrdp || true
-          
-          # Фикс прав для запуска X-сервера
-          echo -e "allowed_users=anybody\nneeds_root_rights=yes" > /etc/X11/Xwrapper.config
-          
-          # Сброс DBUS и XDG переменных перед запуском DE, чтобы сессия XRDP не вылетала
-          echo -e "unset DBUS_SESSION_BUS_ADDRESS\nunset XDG_RUNTIME_DIR\n$DE_START" > /home/cloud/.xinitrc
-          chmod +x /home/cloud/.xinitrc && chown cloud:cloud /home/cloud/.xinitrc
-          
-          # Сборка XRDP из AUR
-          git config --global --add safe.directory '*'
-          su - cloud -c "git config --global --add safe.directory '*'"
-          su - cloud -c "cd /tmp && git clone https://aur.archlinux.org/yay-bin.git && cd yay-bin && makepkg -si --noconfirm"
-          su - cloud -c 'yay -S --noconfirm --mflags "--nocheck" xrdp xorgxrdp'
 
-      - name: "Setup Debian Desktop"
-        if: matrix.os_name == 'debian' && inputs.launch_debian == true
+      # 1. Установка и инициализация LXD/LXC на хосте GitHub
+      - name: "Install and Initialize LXD"
+        if: steps.check.outputs.skip != 'true'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y lxd-client snapd
+          sudo snap install lxd --channel=latest/stable
+          sudo lxd init --auto
+
+      # 2. Запуск LXC контейнера с полноценным systemd
+      - name: "Launch LXC Container"
+        if: steps.check.outputs.skip != 'true'
+        run: |
+          if [ "${{ matrix.os_name }}" = "archlinux" ]; then
+            sudo lxc launch images:archlinux desktop-container
+          else
+            sudo lxc launch images:debian/12 desktop-container
+          fi
+          # Даем контейнеру время на инициализацию системы и сети
+          sleep 10
+          sudo lxc list
+
+      # 3. Подключение Tailscale внутри LXC контейнера (с пробросом env)
+      - name: "Install and Start Tailscale inside LXC"
+        if: steps.check.outputs.skip != 'true'
         env:
-          DEBIAN_FRONTEND: noninteractive
+          TAIL_KEY: ${{ secrets.TAIL_KEY }}
         run: |
-          apt-get update && apt-get install -y dbus dbus-x11 xorg xrdp nano
-          if [ "${{ inputs.desktop_env }}" = "kde" ]; then
-            apt-get install -y kde-plasma-desktop konsole
-            DE_START="export DESKTOP_SESSION=plasma\nexport XDG_CURRENT_DESKTOP=KDE\nexport XDG_SESSION_TYPE=x11\nexec dbus-launch --exit-with-session startplasma-x11"
-          elif [ "${{ inputs.desktop_env }}" = "gnome" ]; then
-            apt-get install -y gnome-session gnome-flashback
-            DE_START="export XDG_CURRENT_DESKTOP=GNOME-Flashback:GNOME\nexec dbus-launch --exit-with-session gnome-session --session=gnome-flashback-metacity"
+          if [ "${{ matrix.os_name }}" = "archlinux" ]; then
+            # Для Arch используем строго pacman
+            sudo lxc exec desktop-container -- pacman -Syu --noconfirm tailscale curl sudo dbus
           else
-            apt-get install -y xfce4 xfce4-goodies
-            DE_START="exec startxfce4"
+            # Для Debian используем apt
+            sudo lxc exec desktop-container -- apt-get update
+            sudo lxc exec desktop-container -- apt-get install -y curl sudo dbus dbus-x11
+            sudo lxc exec desktop-container -- sudo mkdir -p --mode=0755 /usr/share/keyrings
+            sudo lxc exec desktop-container -- curl -fsSL https://pkgs.tailscale.com/stable/debian/bookworm.noarmor.gpg | sudo lxc exec desktop-container -- sudo tee /usr/share/keyrings/tailscale-archive-keyring.gpg >/dev/null
+            sudo lxc exec desktop-container -- curl -fsSL https://pkgs.tailscale.com/stable/debian/bookworm.tailscale-keyring.list | sudo lxc exec desktop-container -- sudo tee /etc/apt/sources.list.d/tailscale.list
+            sudo lxc exec desktop-container -- sudo apt-get install tailscale -y
           fi
           
-          # Создание юзера cloud с добавлением в системные и графические группы
-          useradd -m -s /bin/bash cloud
-          usermod -a -G sudo,tty,video,audio cloud || true
-          echo "cloud:cloud" | chpasswd
-          echo "cloud ALL=(ALL) NOPASSWD: ALL" >> /etc/sudoers
+          # Запускаем системную службу tailscaled через нативный systemd контейнера
+          sudo lxc exec desktop-container -- systemctl enable --now tailscaled
+          sleep 3
           
-          # Добавляем xrdp в графические группы Debian
-          usermod -a -G tty,video,audio xrdp || true
-          
-          # Фикс прав для запуска X-сервера
-          echo -e "allowed_users=anybody\nneeds_root_rights=yes" > /etc/X11/Xwrapper.config
-          
-          # Сброс DBUS и XDG переменных для Debian
-          echo -e "unset DBUS_SESSION_BUS_ADDRESS\nunset XDG_RUNTIME_DIR\n$DE_START" > /home/cloud/.xsession
-          chown cloud:cloud /home/cloud/.xsession
+          # Теперь переменная подхватывается корректно на уровне самого шага
+          sudo lxc exec desktop-container --env TAIL_KEY="$TAIL_KEY" -- tailscale up --authkey="$TAIL_KEY" --hostname="desktop-${{ matrix.os_name }}" --advertise-exit-node
 
-      # --- ЗАПУСК ВСЕХ СЕРВИСОВ И ОЖИДАНИЕ ДЛЯ КОНТЕЙНЕРОВ ---
-      - name: "Start Container Services and Keep Alive"
-        if: (matrix.os_name == 'archlinux' && inputs.launch_arch == true) || (matrix.os_name == 'debian' && inputs.launch_debian == true)
+      # 4. Установка графики, XRDP и создание пользователя внутри LXC
+      - name: "Setup Desktop Environment and XRDP"
+        if: steps.check.outputs.skip != 'true'
         run: |
-          mkdir -p /run/dbus /var/run/xrdp
-          dbus-daemon --system --fork 2>/dev/null || true
+          # Создаем юзера cloud и прописываем дефолтные пароли
+          sudo lxc exec desktop-container -- useradd -m -s /bin/bash cloud
+          sudo lxc exec desktop-container -- chsh -s /bin/bash root
+          sudo lxc exec desktop-container -- sh -c 'echo "cloud:cloud" | chpasswd'
+          sudo lxc exec desktop-container -- sh -c 'echo "root:cloud" | chpasswd'
           
-          # Запуск демонов XRDP графики
-          xrdp-keygen xrdp /etc/xrdp/rsakeys.ini
-          xrdp-sesman --ns &
-          xrdp &
+          # --- РАЗДЕЛЕНИЕ ЛОГИКИ НАСТРОЙКИ ГРАФИКИ ---
+          if [ "${{ matrix.os_name }}" = "archlinux" ]; then
+            # НАСТРОЙКА ARCH LINUX (ПАКМАН И YAY)
+            sudo lxc exec desktop-container -- pacman -S --noconfirm base-devel git xorg-server xorg-apps nano
+            sudo lxc exec desktop-container -- sh -c 'echo "cloud ALL=(ALL) NOPASSWD: ALL" >> /etc/sudoers'
+            
+            if [ "${{ inputs.desktop_env }}" = "kde" ]; then
+              sudo lxc exec desktop-container -- pacman -S --noconfirm plasma-desktop konsole plasma-nm
+              DE_START="exec dbus-launch --exit-with-session startplasma-x11"
+            elif [ "${{ inputs.desktop_env }}" = "gnome" ]; then
+              sudo lxc exec desktop-container -- pacman -S --noconfirm gnome-shell gdm
+              DE_START="exec dbus-launch --exit-with-session gnome-session"
+            else
+              sudo lxc exec desktop-container -- pacman -S --noconfirm xfce4 xfce4-goodies
+              DE_START="exec startxfce4"
+            fi
+            
+            sudo lxc exec desktop-container -- sh -c "echo 'allowed_users=anybody' > /etc/X11/Xwrapper.config"
+            sudo lxc exec desktop-container -- sh -c "echo '$DE_START' > /home/cloud/.xinitrc"
+            sudo lxc exec desktop-container -- chmod +x /home/cloud/.xinitrc
+            sudo lxc exec desktop-container -- chown cloud:cloud /home/cloud/.xinitrc
+            
+            # Собираем xrdp и xorgxrdp через yay внутри Арча
+            sudo lxc exec desktop-container -- su - cloud -c "git config --global --add safe.directory '*'"
+            sudo lxc exec desktop-container -- su - cloud -c "cd /tmp && git clone https://archlinux.org && cd yay-bin && makepkg -si --noconfirm"
+            sudo lxc exec desktop-container -- su - cloud -c 'yay -S --noconfirm --mflags "--nocheck" xrdp xorgxrdp'
+            
+            # Включаем службы через полноценный systemd
+            sudo lxc exec desktop-container -- systemctl enable --now xrdp xrdp-sesman
+            
+          else
+            # НАСТРОЙКА DEBIAN (APT)
+            sudo lxc exec desktop-container -- apt-get install -y xorg xrdp xorgxrdp nano
+            sudo lxc exec desktop-container -- sh -c 'echo "cloud ALL=(ALL) NOPASSWD: ALL" >> /etc/sudoers'
+            sudo lxc exec desktop-container -- usermod -a -G sudo cloud
+            
+            if [ "${{ inputs.desktop_env }}" = "kde" ]; then
+              sudo lxc exec desktop-container -- apt-get install -y kde-plasma-desktop konsole
+              DE_START="export DESKTOP_SESSION=plasma\nexport XDG_CURRENT_DESKTOP=KDE\nexport XDG_SESSION_TYPE=x11\nexec dbus-launch --exit-with-session startplasma-x11"
+            elif [ "${{ inputs.desktop_env }}" = "gnome" ]; then
+              sudo lxc exec desktop-container -- apt-get install -y gnome-session gnome-flashback
+              DE_START="export XDG_CURRENT_DESKTOP=GNOME-Flashback:GNOME\nexec dbus-launch --exit-with-session gnome-session --session=gnome-flashback-metacity"
+            else
+              sudo lxc exec desktop-container -- apt-get install -y xfce4 xfce4-goodies
+              DE_START="exec startxfce4"
+            fi
+            
+            sudo lxc exec desktop-container -- sh -c "echo 'allowed_users=anybody' > /etc/X11/Xwrapper.config"
+            sudo lxc exec desktop-container -- sh -c "echo -e '$DE_START' > /home/cloud/.xsession"
+            sudo lxc exec desktop-container -- chown cloud:cloud /home/cloud/.xsession
+            
+            # Перезапускаем службу XRDP в Debian
+            sudo lxc exec desktop-container -- systemctl restart xrdp
+          fi
+
+      # 5. Удержание контейнера активным
+      - name: "Keep Alive LXC"
+        if: steps.check.outputs.skip != 'true'
+        run: |
           echo "=========================================="
-          echo "  КОНТЕЙНЕР [${{ matrix.os_name }}] ПОДНЯТ!"
-          echo "  Логин RDP: cloud"
-          echo "  Пароль RDP: cloud"
+          echo "  LXC КОНТЕЙНЕР [${{ matrix.os_name }}] ПОДНЯТ!"
+          echo "  Все службы работают через системный systemd."
+          echo "  Логин RDP: cloud | Пароль RDP: cloud"
           echo "=========================================="
-          sleep infinity
+          sudo lxc exec desktop-container -- sleep infinity
 
   # ==========================================
-  # ДЖОБА 2: ДЛЯ НАТИВНОГО ХОСТА (UBUNTU)
+  # ДЖОБА 2: ДЛЯ НАТИВНОГО ХОСТА (UBUNTU) - БЕЗ ИЗМЕНЕНИЙ
   # ==========================================
   deploy-native-ubuntu:
     runs-on: ubuntu-latest
@@ -201,17 +213,12 @@ jobs:
             DE_START="startxfce4"
           fi
           
-          # Задаем пароль 'cloud' для нативного юзера 'runner'
           echo "runner:cloud" | sudo chpasswd
-          
-          # Фикс прав для Xorg
           sudo sed -i 's/allowed_users=console/allowed_users=anybody/g' /etc/X11/Xwrapper.config || echo "allowed_users=anybody" | sudo tee /etc/X11/Xwrapper.config
           
-          # Прописываем старт графической оболочки нативно под runner
           echo "$DE_START" > ~/.xsession
           chmod +x ~/.xsession
           
-          # Перезапуск нативного сервиса XRDP
           sudo systemctl restart xrdp
           sudo systemctl enable xrdp
 
@@ -220,7 +227,6 @@ jobs:
           echo "=========================================="
           echo "  НАТИВНАЯ UBUNTU УСПЕШНО ПОДНЯТА!"
           echo "  Устройство в Tailscale: desktop-ubuntu"
-          echo "  Логин RDP: runner"
-          echo "  Пароль RDP: cloud"
+          echo "  Логин RDP: runner | Пароль RDP: cloud"
           echo "=========================================="
           sleep infinity
