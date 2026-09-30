@@ -95,8 +95,11 @@ jobs:
             --non-interactive \
             --url "http://${GITLAB_CONTAINER_NAME}:80" \
             --token "$RUNNER_TOKEN" \
-            --executor "lxc" \
+            --executor "custom" \
             --description "GHA-Dynamic-LXC-Runner" \
+            --builds-dir "/builds" \
+            --cache-dir "/builds-cache/cache" \
+            --custom-run-exec "/usr/bin/lxc-execute" \
             --docker-extra-hosts "${CURRENT_VM_HOSTNAME}:${CURRENT_VM_TS_IP}"
 
           echo "Раннер успешно привязан к динамическому хосту!"
