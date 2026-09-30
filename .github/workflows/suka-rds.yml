@@ -95,22 +95,19 @@ jobs:
           sudo lxd init --auto
 
       # 2. Запуск LXC контейнера с полноценным systemd
+      # 2. Запуск LXC контейнера с полноценным systemd
       - name: "Launch LXC Container"
         if: steps.check.outputs.skip != 'true'
         run: |
-          if [ "${{ matrix.os_name }}" = "archlinux" ]; then
-            sudo lxc launch images:archlinux desktop-container
-          else
-          if [ "${{ matrix.os_name }}" = "debian" ]; then
-            sudo lxc launch images:debian/12 desktop-container
-          else
-            if [ "${{ matrix.os_name }}" = "fedora" ]; then
-            sudo lxc launch images:fedora/40 desktop-container
-          else
-          if [ "${{ matrix.os_name }}" = "alpine" ]; then
-            sudo lxc launch images:alpine/latest desktop-container
-          else
-          fi
+          # Берем имя ОС из матрицы и сразу корректируем тег под стандарты образов LXD
+          OS_TARGET="${{ matrix.os_name }}"
+          [ "$OS_TARGET" = "debian" ] && OS_TARGET="debian/12"
+          [ "$OS_TARGET" = "alpine" ] && OS_TARGET="alpine/latest"
+          [ "$OS_TARGET" = "fedora" ] && OS_TARGET="fedora/40"
+          
+          # Запускаем контейнер одной строкой без всяких громоздких if/elif/fi
+          sudo lxc launch images:$OS_TARGET desktop-container
+          
           # Даем контейнеру время на инициализацию системы и сети
           sleep 10
           sudo lxc list
