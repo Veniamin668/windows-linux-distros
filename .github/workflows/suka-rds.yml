@@ -95,9 +95,12 @@ jobs:
             # ФИКС СЕТИ ДЛЯ ARCH LXC: Включаем нативный сетевой демон и резолвер
             sudo lxc exec desktop-container -- systemctl enable --now systemd-networkd systemd-resolved
             sleep 5
+
+            # РАЗГОНЯЕМ PACMAN: Включаем 35 параллельных потоков загрузки пакетов
+            sudo lxc exec desktop-container -- sed -i 's/#ParallelDownloads = .*/ParallelDownloads = 35/g' /etc/pacman.conf
             
             # Для Arch используем строго pacman
-            sudo lxc exec desktop-container -- pacman -Syu --noconfirm tailscale curl sudo dbus
+            sudo lxc exec desktop-container -- pacman -Syu --noconfirm --needed  tailscale curl sudo dbus
           else
             # Для Debian используем apt
             sudo lxc exec desktop-container -- apt-get update
@@ -128,17 +131,17 @@ jobs:
           # --- РАЗДЕЛЕНИЕ ЛОГИКИ НАСТРОЙКИ ГРАФИКИ ---
           if [ "${{ matrix.os_name }}" = "archlinux" ]; then
             # НАСТРОЙКА ARCH LINUX (ПАКМАН И YAY)
-            sudo lxc exec desktop-container -- pacman -S --noconfirm base-devel git xorg-server xorg-apps nano
+            sudo lxc exec desktop-container -- pacman -S --noconfirm --needed base-devel git xorg-server xorg-apps nano
             sudo lxc exec desktop-container -- sh -c 'echo "cloud ALL=(ALL) NOPASSWD: ALL" >> /etc/sudoers'
             
             if [ "${{ inputs.desktop_env }}" = "kde" ]; then
-              sudo lxc exec desktop-container -- pacman -S --noconfirm plasma-desktop konsole plasma-nm
+              sudo lxc exec desktop-container -- pacman -S --noconfirm --needed plasma-desktop konsole plasma-nm
               DE_START="exec dbus-launch --exit-with-session startplasma-x11"
             elif [ "${{ inputs.desktop_env }}" = "gnome" ]; then
-              sudo lxc exec desktop-container -- pacman -S --noconfirm gnome-shell gdm
+              sudo lxc exec desktop-container -- pacman -S --noconfirm --needed gnome-shell gdm
               DE_START="exec dbus-launch --exit-with-session gnome-session"
             else
-              sudo lxc exec desktop-container -- pacman -S --noconfirm xfce4 xfce4-goodies
+              sudo lxc exec desktop-container -- pacman -S --noconfirm --needed xfce4 xfce4-goodies
               DE_START="exec startxfce4"
             fi
             
