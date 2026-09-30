@@ -60,7 +60,7 @@ jobs:
         if: steps.check.outputs.skip != 'true'
         run: |
           sudo apt-get update
-          sudo apt-get install -y lxd-client snapd
+          sudo apt-get install -y snapd
           sudo snap install lxd --channel=latest/stable
           sudo lxd init --auto
 
