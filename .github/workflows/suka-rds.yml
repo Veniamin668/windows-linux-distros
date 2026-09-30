@@ -18,6 +18,17 @@ on:
         required: true
         type: boolean
         default: true
+      launch_fedora:
+        description: 'Запустить Fedora (В LXC Контейнере)?'
+        required: true
+        type: boolean
+        default: false
+      launch_alpine:
+        description: 'Запустить Alpine (В LXC Контейнере)?'
+        required: true
+        type: boolean
+        default: false
+
       desktop_env:
         description: 'Выберите графическую оболочку (DE)'
         required: true
@@ -40,7 +51,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os_name: [ 'archlinux', 'debian' ]
+        os_name: [ 'archlinux', 'debian', 'fedora', 'alpine']
 
     steps:
       # Пропускаем дистрибутив, если галочка для него не установлена
@@ -52,6 +63,11 @@ jobs:
           elif [ "${{ matrix.os_name }}" = "debian" ] && [ "${{ inputs.launch_debian }}" != "true" ]; then
             echo "skip=true" >> $GITHUB_OUTPUT
           else
+          elif [ "${{ matrix.os_name }}" = "fedora" ] && [ "${{ inputs.launch_fedora }}" != "true" ]; then
+            echo "skip=true" >> $GITHUB_OUTPUT
+          elif [ "${{ matrix.os_name }}" = "alpine" ] && [ "${{ inputs.launch_alpine }}" != "true" ]; then
+            echo "skip=true" >> $GITHUB_OUTPUT
+            
             echo "skip=false" >> $GITHUB_OUTPUT
           fi
 
@@ -79,7 +95,15 @@ jobs:
           if [ "${{ matrix.os_name }}" = "archlinux" ]; then
             sudo lxc launch images:archlinux desktop-container
           else
+          if [ "${{ matrix.os_name }}" = "debian" ]; then
             sudo lxc launch images:debian/12 desktop-container
+          else
+            if [ "${{ matrix.os_name }}" = "fedora" ]; then
+            sudo lxc launch images:fedora/40 desktop-container
+          else
+          if [ "${{ matrix.os_name }}" = "alpine" ]; then
+            sudo lxc launch images:alpine/latest desktop-container
+          else
           fi
           # Даем контейнеру время на инициализацию системы и сети
           sleep 10
@@ -101,9 +125,30 @@ jobs:
             
             # Для Arch используем строго pacman
             sudo lxc exec desktop-container -- pacman -Syu --noconfirm --needed  tailscale curl sudo dbus
+          
+          elif [ "${{ matrix.os_name }}" = "fedora" ]; then
+            # РАЗГОНЯЕМ FEDORA: включаем 35 параллельных потоков для dnf
+            # Add the tailscale repository
+            sudo dnf config-manager --add-repo https://pkgs.tailscale.com/stable/fedora/tailscale.repo
+            # Install Tailscale
+            sudo dnf install tailscale -y
+            # Enable and start tailscaled
+            sudo systemctl enable --now tailscaled
+
+            sudo lxc exec desktop-container -- sh -c 'echo "max_parallel_downloads=35" >> /etc/dnf/dnf.conf'
+            sudo lxc exec desktop-container -- dnf install -y curl sudo dbus-x11
+
+          elif [ "${{ matrix.os_name }}" = "alpine" ]; then
+            # Для Alpine используем легковесный apk менеджер
+            sudo lxc exec desktop-container -- apk update
+            sudo lxc exec desktop-container -- apk add tailscale curl sudo dbus dbus-x11 bash
+            # Так как в Alpine нет systemd, форкаем демон tailscaled вручную в фон
+            sudo lxc exec desktop-container -- sh -c '/usr/sbin/tailscaled > /dev/null 2>&1 &'
           else
+          
             # Для Debian используем apt
             sudo lxc exec desktop-container -- apt-get update
+            sudo lxc exec desktop-container -- sh -c 'echo "APT::Acquire::Queue-Mode \"access\";" > /etc/apt/apt.conf.d/99parallel'
             sudo lxc exec desktop-container -- apt-get install -y curl sudo dbus dbus-x11
             sudo lxc exec desktop-container -- sudo mkdir -p --mode=0755 /usr/share/keyrings
             sudo lxc exec desktop-container -- curl -fsSL https://pkgs.tailscale.com/stable/debian/bookworm.noarmor.gpg | sudo lxc exec desktop-container -- sudo tee /usr/share/keyrings/tailscale-archive-keyring.gpg >/dev/null
@@ -159,6 +204,50 @@ jobs:
             sudo lxc exec desktop-container -- systemctl enable --now xrdp xrdp-sesman
             
           else
+           elif [ "${{ matrix.os_name }}" = "fedora" ]; then
+            # --- ВЕТКА FEDORA ---
+            # Накатываем X11 и XRDP. Для XFCE используем groupinstall, для остальных — dnf пакеты
+            if [ "${{ inputs.desktop_env }}" = "kde" ]; then
+              sudo lxc exec desktop-container -- dnf groupinstall -y "KDE Plasma Workspaces" --skip-broken
+              DE_START="exec dbus-launch --exit-with-session startplasma-x11"
+            elif [ "${{ inputs.desktop_env }}" = "gnome" ]; then
+              sudo lxc exec desktop-container -- dnf groupinstall -y "GNOME Desktop Environment" --skip-broken
+              DE_START="exec dbus-launch --exit-with-session gnome-session"
+            else
+              sudo lxc exec desktop-container -- dnf groupinstall -y "Xfce" --skip-broken
+              DE_START="exec dbus-launch --exit-with-session startxfce4"
+            fi
+            
+            sudo lxc exec desktop-container -- dnf install -y xrdp xorg-x11-server-Xorg nano
+            sudo lxc exec desktop-container -- sh -c 'echo "cloud ALL=(ALL) NOPASSWD: ALL" >> /etc/sudoers'
+            sudo lxc exec desktop-container -- usermod -a -G wheel cloud
+            
+            sudo lxc exec desktop-container -- sh -c "echo 'allowed_users=anybody' > /etc/X11/Xwrapper.config"
+            sudo lxc exec desktop-container -- sh -c "echo '$DE_START' > /home/cloud/.Xclients"
+            sudo lxc exec desktop-container -- chmod +x /home/cloud/.Xclients
+            sudo lxc exec desktop-container -- chown cloud:cloud /home/cloud/.Xclients
+            
+            # Включаем нативный сервис XRDP
+            sudo lxc exec desktop-container -- systemctl enable --now xrdp
+
+            elif [ "${{ matrix.os_name }}" = "alpine" ]; then
+            # --- ВЕТКА ALPINE ---
+            # Из-за легковесности Alpine ставим туда только XFCE (KDE/Gnome в ней без systemd — ад)
+            sudo lxc exec desktop-container -- apk add xorg-server xfce4 xfce4-terminal xrdp nano dbus-x11
+            sudo lxc exec desktop-container -- sh -c 'echo "cloud ALL=(ALL) NOPASSWD: ALL" >> /etc/sudoers'
+            sudo lxc exec desktop-container -- addgroup cloud wheel || true
+            
+            DE_START="exec dbus-launch --exit-with-session startxfce4"
+            sudo lxc exec desktop-container -- sh -c "echo 'allowed_users=anybody' > /etc/X11/Xwrapper.config"
+            sudo lxc exec desktop-container -- sh -c "echo '$DE_START' > /home/cloud/.xinitrc"
+            sudo lxc exec desktop-container -- chmod +x /home/cloud/.xinitrc
+            sudo lxc exec desktop-container -- chown cloud:cloud /home/cloud/.xinitrc
+            
+            # Генерируем RSA-ключи и запускаем демоны XRDP вручную в фон (для OpenRC)
+            sudo lxc exec desktop-container -- sh -c 'xrdp-keygen xrdp /etc/xrdp/rsakeys.ini'
+            sudo lxc exec desktop-container -- sh -c 'xrdp-sesman & xrdp &'
+
+            else
             # НАСТРОЙКА DEBIAN (APT)
             sudo lxc exec desktop-container -- apt-get install -y xorg xrdp xorgxrdp nano
             sudo lxc exec desktop-container -- sh -c 'echo "cloud ALL=(ALL) NOPASSWD: ALL" >> /etc/sudoers'
