@@ -84,6 +84,10 @@ jobs:
           TAIL_KEY: ${{ secrets.TAIL_KEY }}
         run: |
           if [ "${{ matrix.os_name }}" = "archlinux" ]; then
+            # ФИКС СЕТИ ДЛЯ ARCH LXC: Включаем нативный сетевой демон и резолвер
+            sudo lxc exec desktop-container -- systemctl enable --now systemd-networkd systemd-resolved
+            sleep 5
+            
             # Для Arch используем строго pacman
             sudo lxc exec desktop-container -- pacman -Syu --noconfirm tailscale curl sudo dbus
           else
