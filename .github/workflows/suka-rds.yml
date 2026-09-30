@@ -62,6 +62,14 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y snapd
           sudo snap install lxd --channel=latest/stable
+          # ФИКС СЕТИ: Включаем глобальный форвардинг пакетов в ядре хоста
+          sudo sysctl -w net.ipv4.ip_forward=1
+          sudo sysctl -w net.ipv6.conf.all.forwarding=1
+          
+          # УНИВЕРСАЛЬНЫЙ NAT: Выпускаем всё, что идет через интерфейс lxdbr0, независимо от случайного IP
+          sudo iptables -t nat -A POSTROUTING -o eth0 -j MASQUERADE || true
+          sudo iptables -A FORWARD -i lxdbr0 -j ACCEPT || true
+          sudo iptables -A FORWARD -o lxdbr0 -j ACCEPT || true
           sudo lxd init --auto
 
       # 2. Запуск LXC контейнера с полноценным systemd
