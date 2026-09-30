@@ -55,21 +55,27 @@ jobs:
 
     steps:
       # Пропускаем дистрибутив, если галочка для него не установлена
+      # Пропускаем дистрибутив, если галочка для него не установлена
       - name: "Check if OS is enabled"
         id: check
         run: |
-          if [ "${{ matrix.os_name }}" = "archlinux" ] && [ "${{ inputs.launch_arch }}" != "true" ]; then
-            echo "skip=true" >> $GITHUB_OUTPUT
-          elif [ "${{ matrix.os_name }}" = "debian" ] && [ "${{ inputs.launch_debian }}" != "true" ]; then
-            echo "skip=true" >> $GITHUB_OUTPUT
-          else
-          elif [ "${{ matrix.os_name }}" = "fedora" ] && [ "${{ inputs.launch_fedora }}" != "true" ]; then
-            echo "skip=true" >> $GITHUB_OUTPUT
-          elif [ "${{ matrix.os_name }}" = "alpine" ] && [ "${{ inputs.launch_alpine }}" != "true" ]; then
-            echo "skip=true" >> $GITHUB_OUTPUT
-            
+          # По умолчанию считаем, что ОС выключена
+          echo "skip=true" >> $GITHUB_OUTPUT
+          
+          # Точечно проверяем текущую ОС из матрицы и ее инпут
+          if [ "${{ matrix.os_name }}" = "archlinux" ] && [ "${{ inputs.launch_arch }}" = "true" ]; then
             echo "skip=false" >> $GITHUB_OUTPUT
           fi
+          if [ "${{ matrix.os_name }}" = "debian" ] && [ "${{ inputs.launch_debian }}" = "true" ]; then
+            echo "skip=false" >> $GITHUB_OUTPUT
+          fi
+          if [ "${{ matrix.os_name }}" = "fedora" ] && [ "${{ inputs.launch_fedora }}" = "true" ]; then
+            echo "skip=false" >> $GITHUB_OUTPUT
+          fi
+          if [ "${{ matrix.os_name }}" = "alpine" ] && [ "${{ inputs.launch_alpine }}" = "true" ]; then
+            echo "skip=false" >> $GITHUB_OUTPUT
+          fi
+
 
       # 1. Установка и инициализация LXD/LXC на хосте GitHub
       - name: "Install and Initialize LXD"
