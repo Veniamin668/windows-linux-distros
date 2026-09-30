@@ -203,7 +203,7 @@ jobs:
             # Включаем службы через полноценный systemd
             sudo lxc exec desktop-container -- systemctl enable --now xrdp xrdp-sesman
             
-          else
+          
            elif [ "${{ matrix.os_name }}" = "fedora" ]; then
             # --- ВЕТКА FEDORA ---
             # Накатываем X11 и XRDP. Для XFCE используем groupinstall, для остальных — dnf пакеты
