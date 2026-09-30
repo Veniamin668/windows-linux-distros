@@ -1,4 +1,4 @@
-name: Deploy Dynamic GitLab Cluster test for VM runner
+name: Deploy Dynamic GitLab Cluster test
 on:
   workflow_dispatch: # Кнопка для ручного пинка
 
@@ -32,7 +32,7 @@ jobs:
           # Запускаем docker-compose, передавая текущий HOSTNAME как переменную окружения
           HOSTNAME=$CURRENT_VM_HOSTNAME docker compose up -d gitlab
           
-      # 5. Динамически находим имена контейнеров, ждем веб-порт, кастомизируем контейнер раннера и регистрируем его
+      # 5. Динамически находим имена контейнеров, ждем веб-порт и регистрируем раннер
       - name: Wait for GitLab & Auto-Register Runner
         env:
           ADMIN_PASS: ${{ secrets.ADMIN_PASS }}
@@ -50,7 +50,7 @@ jobs:
           echo "Статус healthy получен! Даем PostgreSQL 30 секунд догрузить все таблицы..."
           sleep 30
 
-          # АВТОМАТИЧЕСКАЯ СМЕНА ПАРОЛЯ ROOT ЧЕРЕЗ USER.FIRST
+          # АВТОМАТИЧЕСКАЯ СМЕНА ПАРОЛЯ ROOTЧЕРЕЗ USER.FIRST
           if [ ! -z "$ADMIN_PASS" ]; then
             echo "Устанавливаем пароль root из секрета ADMIN_PASS..."
             docker exec $GITLAB_CONTAINER_NAME gitlab-rails runner "u = User.first; u.password = '$ADMIN_PASS'; u.password_confirmation = '$ADMIN_PASS'; u.save!"
@@ -69,7 +69,7 @@ jobs:
           HOSTNAME=$(hostname) docker compose up -d gitlab-runner
 
           echo "=== ПРОВЕРКА ДОСТУПНОСТИ API ==="
-          echo "Ждем, пока порт 80 внутри контейнера GitLab РЕАЛЬНО откроется и начнет отвечать..."
+          echo "Ждем, пока порт 8929 внутри контейнера GitLab РЕАЛЬНО откроется и начнет отвечать..."
           
           until docker exec $GITLAB_CONTAINER_NAME curl -s -I http://127.0.0 > /dev/null; do
             echo "Порт 80 всё еще закрыт (connection refused). Ждем 10 секунд..."
@@ -82,28 +82,24 @@ jobs:
           RUNNER_CONTAINER_NAME=$(docker ps --filter "ancestor=gitlab/gitlab-runner:latest" --format "{{.Names}}")
           echo "Динамически определено имя контейнера Runner: $RUNNER_CONTAINER_NAME"
 
-          echo "=== ТВОЯ КАСТОМИЗАЦИЯ: Ставим wimtools и базу под ВМ прямо внутрь контейнера раннера ==="
-          # Залетаем под рутом через динамическое имя контейнера, обновляем apt и докидываем утилиты
-          docker exec -u 0 $RUNNER_CONTAINER_NAME apt-get update
-          docker exec -u 0 $RUNNER_CONTAINER_NAME apt-get install -y wimtools qemu-kvm qemu-utils nbd-client parted ntfs-3g curl wget
-
           # МАГИЯ ДИНАМИКИ: вытаскиваем текущее имя хоста и текущий IP из Tailscale!
           CURRENT_VM_HOSTNAME=$(hostname)
           CURRENT_VM_TS_IP=$(tailscale ip -4)
           
           echo "Регистрируем раннер для хоста $CURRENT_VM_HOSTNAME с IP $CURRENT_VM_TS_IP"
-
-          # Регистрируем наш супер-раннер с типом executor "custom" вместо "docker"
+          # 1. Закидываем тулзики внутрь контейнера раннера через твою переменную
+          docker exec -u 0 $RUNNER_CONTAINER_NAME apt-get update
+          docker exec -u 0 $RUNNER_CONTAINER_NAME apt-get install -y lxc lxc-templates cgroup-tools
+          
           docker exec $RUNNER_CONTAINER_NAME gitlab-runner register \
             --non-interactive \
             --url "http://${GITLAB_CONTAINER_NAME}:80" \
             --token "$RUNNER_TOKEN" \
-            --executor "custom" \
-            --description "GHA-VM-Custom-Runner" \
-            --builds-dir "/home/gitlab-runner/builds" \
-            --cache-dir "/home/gitlab-runner/cache"
+            --executor "lxc" \
+            --description "GHA-Dynamic-LXC-Runner" \
+            --docker-extra-hosts "${CURRENT_VM_HOSTNAME}:${CURRENT_VM_TS_IP}"
 
-          echo "Раннер успешно кастомизирован, переведен на ВМ-тип и привязан!"
+          echo "Раннер успешно привязан к динамическому хосту!"
 
       # 6. Крутим карусель 5 часов с пингами консоли
       - name: Keep Infrastructure Alive
