@@ -35,24 +35,18 @@ jobs:
   deploy-containers:
     runs-on: ubuntu-latest
     timeout-minutes: 360
+    # Джоба запустится, только если выбран хотя бы один контейнер
+    if: ${{ inputs.launch_arch == true || inputs.launch_debian == true }}
     
     strategy:
       fail-fast: false
       matrix:
         os_name: [ 'archlinux', 'debian' ]
-        is_enabled: [ true ] 
         include:
           - os_name: 'archlinux'
             os_image: 'archlinux:latest'
-            is_enabled: ${{ inputs.launch_arch }}
-          
           - os_name: 'debian'
             os_image: 'debian:bookworm-slim'
-            is_enabled: ${{ inputs.launch_debian }}
-
-        # Теперь GitHub знает про ключ run и успешно отфильтрует false
-        exclude:
-          - run: false
 
     container:
       image: ${{ matrix.os_image }}
@@ -62,7 +56,7 @@ jobs:
     
       # --- СТАРТ СЕТИ ДЛЯ КОНТЕЙНЕРОВ ---
       - name: "Arch Install and Start Tailscale"
-        if: matrix.os_name == 'archlinux'
+        if: matrix.os_name == 'archlinux' && inputs.launch_arch == true
         run: |
           pacman -Syu --noconfirm tailscale curl
           mkdir -p /var/run/tailscale /var/lib/tailscale
@@ -71,9 +65,9 @@ jobs:
           tailscale up --authkey="${{ secrets.TAIL_KEY }}" --hostname="desktop-arch" --advertise-exit-node
 
       - name: "Debian Install and Start Tailscale"
-        if: matrix.os_name == 'debian'
+        if: matrix.os_name == 'debian' && inputs.launch_debian == true
         run: |
-          # Add Tailscale's GPG key
+          #  Add Tailscale's GPG key
           sudo mkdir -p --mode=0755 /usr/share/keyrings
           curl -fsSL https://pkgs.tailscale.com/stable/debian/bookworm.noarmor.gpg | sudo tee /usr/share/keyrings/tailscale-archive-keyring.gpg >/dev/null
           # Add the tailscale repository
@@ -88,7 +82,7 @@ jobs:
 
       # --- НАСТРОЙКА ГРАФИКИ ДЛЯ КОНТЕЙНЕРОВ ---
       - name: "Setup Arch Linux Desktop"
-        if: matrix.os_name == 'archlinux'
+        if: matrix.os_name == 'archlinux' && inputs.launch_arch == true
         run: |
           pacman -S --noconfirm base-devel git sudo dbus xorg-server xorg-apps nano
           if [ "${{ inputs.desktop_env }}" = "kde" ]; then
@@ -106,14 +100,14 @@ jobs:
           echo "cloud ALL=(ALL) NOPASSWD: ALL" >> /etc/sudoers
           git config --global --add safe.directory '*'
           su - cloud -c "git config --global --add safe.directory '*'"
-          su - cloud -c "cd /tmp && git clone https://aur.archlinux.org/yay-bin.git && cd yay-bin && makepkg -si --noconfirm"
+          su - cloud -c "cd /tmp && git clone https://archlinux.org && cd yay-bin && makepkg -si --noconfirm"
           su - cloud -c 'yay -S --noconfirm --mflags "--nocheck" xrdp xorgxrdp'
           echo "allowed_users=anybody" > /etc/X11/Xwrapper.config
           echo "$DE_START" > /home/cloud/.xinitrc
           chmod +x /home/cloud/.xinitrc && chown cloud:cloud /home/cloud/.xinitrc
 
       - name: "Setup Debian Desktop"
-        if: matrix.os_name == 'debian'
+        if: matrix.os_name == 'debian' && inputs.launch_debian == true
         env:
           DEBIAN_FRONTEND: noninteractive
         run: |
@@ -137,6 +131,7 @@ jobs:
 
       # --- ЗАПУСК СЕРВИСОВ И ОЖИДАНИЕ ДЛЯ КОНТЕЙНЕРОВ ---
       - name: "Start Container Services and Keep Alive"
+        if: (matrix.os_name == 'archlinux' && inputs.launch_arch == true) || (matrix.os_name == 'debian' && inputs.launch_debian == true)
         run: |
           mkdir -p /run/dbus /var/run/xrdp
           dbus-daemon --system --fork 2>/dev/null || true
