@@ -1,4 +1,4 @@
-name: Deploy Dynamic GitLab Cluster test
+name: Deploy Dynamic GitLab testing for lxc
 on:
   workflow_dispatch: # Кнопка для ручного пинка
 
