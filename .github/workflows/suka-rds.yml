@@ -149,7 +149,7 @@ jobs:
             
             # Собираем xrdp и xorgxrdp через yay внутри Арча
             sudo lxc exec desktop-container -- su - cloud -c "git config --global --add safe.directory '*'"
-            sudo lxc exec desktop-container -- su - cloud -c "cd /tmp && git clone https://archlinux.org && cd yay-bin && makepkg -si --noconfirm"
+            sudo lxc exec desktop-container -- su - cloud -c "cd /tmp && git clone https://aur.archlinux.org/yay-bin.git && cd yay-bin && makepkg -si --noconfirm"
             sudo lxc exec desktop-container -- su - cloud -c 'yay -S --noconfirm --mflags "--nocheck" xrdp xorgxrdp'
             
             # Включаем службы через полноценный systemd
