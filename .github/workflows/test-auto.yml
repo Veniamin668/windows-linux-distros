@@ -28,13 +28,14 @@ jobs:
 #          copy-workspace: false # Optional: Default is false
           
       - name: Run Win RDP Enabler
-        uses: Veniamin668/win-rdp-enabler@test
+        uses: Veniamin668/win-rdp-enabler@x64-js
         env:
          TAIL_KEY: ${{ secrets.TAIL_KEY }}
          ADMIN_PASS: ${{ secrets.ADMIN_PASS }}
          USE_CUSTOM_USER: 'false'
          CUSTOM_USERNAME: ''
          CUSTOM_PASSWORD: ${{ secrets.CUSTOM_PASSWORD }}
+         HOSTNAME: 'runner-2025'
         
       - name: Purge Windows Bloat
         uses: Veniamin668/windows-debloater-runner@test
