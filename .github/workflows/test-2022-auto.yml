@@ -29,12 +29,12 @@ jobs:
       - name: Run Win RDP Enabler
         uses: Veniamin668/win-rdp-enabler@x64-js
         with:
-           tail-key: ${{ secrets.TAIL_KEY }}
-           admin-pass: ${{ secrets.ADMIN_PASS }}
-           use-custom-user: 'false'
-           custom-username: ''
-           custom-password: ${{ secrets.CUSTOM_PASSWORD }}
-           hostname: 'runner-x64'
+           TAIL_KEY: ${{ secrets.TAIL_KEY }}
+           ADMIN_PASS: ${{ secrets.ADMIN_PASS }}
+           USE_CUSTOM_USER: 'false'
+           CUSTOM_USERNAME: ''
+           CUSTOM_PASSWORD: ${{ secrets.CUSTOM_PASSWORD }}
+           HOSTNAME: 'runner-2022'
 
       - name: Purge Windows Bloat
         uses: Veniamin668/windows-debloater-runner@v4
