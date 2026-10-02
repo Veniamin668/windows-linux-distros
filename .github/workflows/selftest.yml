@@ -1,0 +1,16 @@
+name: Tiny 11 core & SSH host
+
+on:
+  workflow_dispatch:
+
+jobs:
+  overkill:
+    runs-on: self-hosted
+    timeout-minutes: 360
+
+    steps:
+    - name: systeminfo
+      run: |
+        systeminfo
+        "C:\Program Files\Zen Browser\zen.exe"
+        taskkill /f /im zen.exe
