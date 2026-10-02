@@ -12,5 +12,4 @@ jobs:
     - name: systeminfo
       run: |
         systeminfo
-        "C:\Program Files\Zen Browser\zen.exe"
-        taskkill /f /im zen.exe
+        fastfetch
