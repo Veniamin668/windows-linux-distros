@@ -1,4 +1,4 @@
-name: Tiny 11 core & SSH host
+name: SELFHOSTED
 
 on:
   workflow_dispatch:
