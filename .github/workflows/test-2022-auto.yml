@@ -37,7 +37,7 @@ jobs:
            HOSTNAME: 'runner-2022'
 
       - name: Debloat windows
-        uses: Veniamin668/windows-debloater-runner@v7
+        uses: Veniamin668/windows-debloater-runner@test
         with:
           enable: 'true'
           azure-del: 'true'
