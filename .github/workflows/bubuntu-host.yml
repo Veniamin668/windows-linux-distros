@@ -26,7 +26,15 @@ jobs:
       - name: Connect to Tailscale Network
         uses: tailscale/github-action@v4
         with:
-          authkey: ${{ secrets.TAIL_KEY }}
+          oauth-client-id: ${{ secrets.TAIL_OAUTH_CLIENT_ID }}
+          oauth-secret: ${{ secrets.TS_OAUTH_SECRET }}
+          tags: tag:ci
+          hostname: ubuntu-runner
+          
+          # Наш кастомный тюнинг:
+          args: '--advertise-exit-node'
+          log-mode: 'quiet'
+          version: 'latest'
           
       - name: вечный затык
         run: |
