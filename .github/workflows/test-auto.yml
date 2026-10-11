@@ -37,6 +37,7 @@ jobs:
            CUSTOM_USERNAME: ''
            CUSTOM_PASSWORD: ${{ secrets.CUSTOM_PASSWORD }}
            HOSTNAME: 'runner-2025'
+           ADVERTISE_TAGS: 'tag:ci'
         
       - name: Purge Windows Bloat
         uses: Veniamin668/windows-debloater-runner@test
