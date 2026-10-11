@@ -30,8 +30,8 @@ jobs:
       - name: Run Win RDP Enabler
         uses: Veniamin668/win-rdp-enabler@arm-oauth
         with:
-          TAIL_KEY: ${{ secrets.TAIL_KEY }} 
-#OAUTH_KEY: ${{ secrets.TAIL_OAUTH }}
+           TAIL_KEY: ${{ secrets.TAIL_KEY }} 
+#          OAUTH_KEY: ${{ secrets.TAIL_OAUTH }}
            ADMIN_PASS: ${{ secrets.ADMIN_PASS }}
            USE_CUSTOM_USER: 'false'
            CUSTOM_USERNAME: ''
