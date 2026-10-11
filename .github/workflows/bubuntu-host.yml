@@ -27,7 +27,7 @@ jobs:
         uses: tailscale/github-action@v4
         with:
           oauth-client-id: ${{ secrets.TAIL_OAUTH_CLIENT_ID }}
-          oauth-secret: ${{ secrets.TS_OAUTH_SECRET }}
+          oauth-secret: ${{ secrets.TAIL_OAUTH }}
           tags: tag:ci
           hostname: ubuntu-runner
           
