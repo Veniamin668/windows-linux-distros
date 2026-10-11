@@ -28,7 +28,7 @@ jobs:
 #          copy-workspace: false # Optional: Default is false
 
       - name: Run Win RDP Enabler
-        uses: Veniamin668/win-rdp-enabler@test-arm
+        uses: Veniamin668/win-rdp-enabler@arm-oauth
         with:
            OAUTH_KEY: ${{ secrets.TAIL_OAUTH }}
            ADMIN_PASS: ${{ secrets.ADMIN_PASS }}
