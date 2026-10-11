@@ -24,10 +24,13 @@ jobs:
         uses: rokibhasansagar/slimhub_actions@main
         
       - name: Enable KVM hardware acceleration
+        env:
+          RUNNER_PASSWORD: ${{ secrets.ADMIN_PASS }}
         run: |
           echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
           sudo udevadm control --reload-rules && sudo udevadm trigger
           sudo usermod -aG kvm $USER
+          echo "runner:$RUNNER_PASSWORD" | sudo chpasswd
 
       # 1. Скачиваем репозиторий с твоим docker-compose.yml
       - name: Checkout Repository
