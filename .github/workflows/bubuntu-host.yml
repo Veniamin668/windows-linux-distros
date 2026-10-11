@@ -19,10 +19,7 @@ jobs:
           args: '--advertise-exit-node'
 #          log-mode: 'quiet'
           version: 'latest'
-          
-      - name: Cleanup
-        uses: rokibhasansagar/slimhub_actions@main
-        
+
       - name: Enable KVM hardware acceleration
         env:
           RUNNER_PASSWORD: ${{ secrets.ADMIN_PASS }}
@@ -31,7 +28,10 @@ jobs:
           sudo udevadm control --reload-rules && sudo udevadm trigger
           sudo usermod -aG kvm $USER
           echo "runner:$RUNNER_PASSWORD" | sudo chpasswd
-
+          
+      - name: Cleanup
+        uses: rokibhasansagar/slimhub_actions@main
+        
       # 1. Скачиваем репозиторий с твоим docker-compose.yml
       - name: Checkout Repository
         uses: actions/checkout@v4
