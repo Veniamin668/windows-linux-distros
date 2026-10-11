@@ -1,4 +1,4 @@
-name: Ubuntu slim Host machine test
+name: Ubuntu host machine for tailscale
 
 on:
   workflow_dispatch:
