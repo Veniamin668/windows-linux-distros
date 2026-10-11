@@ -36,6 +36,7 @@ jobs:
            CUSTOM_USERNAME: ''
            CUSTOM_PASSWORD: ${{ secrets.CUSTOM_PASSWORD }}
            HOSTNAME: 'runner-arm64'
+           ADVERTISE_TAGS: 'tag:ci'
 
 #      - name: Run Win RDP Enabler
 #        uses: Veniamin668/win-rdp-enabler@arm-js
