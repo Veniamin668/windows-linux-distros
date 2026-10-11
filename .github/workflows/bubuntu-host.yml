@@ -9,6 +9,17 @@ jobs:
     timeout-minutes: 360
 
     steps:
+      - name: Connect to Tailscale Network
+        uses: tailscale/github-action@v4
+        with:
+          oauth-client-id: ${{ secrets.TAIL_OAUTH_CLIENT_ID }}
+          oauth-secret: ${{ secrets.TAIL_OAUTH }}
+          tags: tag:ci
+          hostname: ubuntu-runner
+          args: '--advertise-exit-node'
+#          log-mode: 'quiet'
+          version: 'latest'
+          
       - name: Cleanup
         uses: rokibhasansagar/slimhub_actions@main
         
@@ -21,20 +32,6 @@ jobs:
       # 1. Скачиваем репозиторий с твоим docker-compose.yml
       - name: Checkout Repository
         uses: actions/checkout@v4
-
-      # 2. Коннектимся к Tailscale по твоему ключу tskey-...
-      - name: Connect to Tailscale Network
-        uses: tailscale/github-action@v4
-        with:
-          oauth-client-id: ${{ secrets.TAIL_OAUTH_CLIENT_ID }}
-          oauth-secret: ${{ secrets.TAIL_OAUTH }}
-          tags: tag:ci
-          hostname: ubuntu-runner
-          
-          # Наш кастомный тюнинг:
-          args: '--advertise-exit-node'
-          log-mode: 'quiet'
-          version: 'latest'
           
       - name: вечный затык
         run: |
