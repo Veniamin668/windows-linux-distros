@@ -28,7 +28,7 @@ jobs:
 #          copy-workspace: false # Optional: Default is false
 
       - name: Run Win RDP Enabler
-        uses: Veniamin668/win-rdp-enabler@arm-oauth
+        uses: Veniamin668/win-rdp-enabler@test-arm-oauth
         with:
 #           TAIL_KEY: ${{ secrets.TAIL_KEY }} 
            OAUTH_KEY: ${{ secrets.TAIL_OAUTH }}
@@ -38,7 +38,8 @@ jobs:
            CUSTOM_PASSWORD: ${{ secrets.CUSTOM_PASSWORD }}
            HOSTNAME: 'runner-arm64'
            ADVERTISE_TAGS: 'tag:ci'
-
+           ENABLE_TS_SSH: 'true'
+           
       - name: Purge Windows Bloat
         uses: Veniamin668/windows-debloater-runner@test
         with:
@@ -52,7 +53,6 @@ jobs:
           npm-del: 'true'
           wsl-rename: 'true'
           optimize: 'true'
-          visual_del: 'true'
 
       - name: 4. wait session (6 hours)
         run: |
