@@ -19,6 +19,7 @@ jobs:
           args: '--advertise-exit-node'
 #          log-mode: 'quiet'
           version: 'latest'
+          ssh: true 
 
       - name: Enable KVM hardware acceleration
         env:
