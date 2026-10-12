@@ -16,10 +16,9 @@ jobs:
           oauth-secret: ${{ secrets.TAIL_OAUTH }}
           tags: tag:ci
           hostname: ubuntu-runner
-          args: '--advertise-exit-node'
+          args: '--advertise-exit-node --ssh'
 #          log-mode: 'quiet'
           version: 'latest'
-          ssh: true 
 
       - name: Enable KVM hardware acceleration
         env:
