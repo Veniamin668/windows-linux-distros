@@ -149,11 +149,16 @@ jobs:
     if: inputs.launch_ubuntu == true
 
     steps:
-      - name: "Ubuntu-Native Connect to Tailscale"
+      - name: Connect to Tailscale Network
         uses: tailscale/github-action@v4
         with:
-          authkey: ${{ secrets.TAIL_KEY }}
+          oauth-client-id: ${{ secrets.TAIL_OAUTH_CLIENT_ID }}
+          oauth-secret: ${{ secrets.TAIL_OAUTH }}
+          tags: tag:ci
           hostname: desktop-ubuntu
+          args: '--advertise-exit-node --ssh'
+#          log-mode: 'quiet'
+          version: 'latest'
 
       - name: "Setup Native Ubuntu Desktop"
         env:
