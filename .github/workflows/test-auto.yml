@@ -40,7 +40,7 @@ jobs:
            ADVERTISE_TAGS: 'tag:ci'
         
       - name: Purge Windows Bloat
-        uses: Veniamin668/windows-debloater-runner@test
+        uses: Veniamin668/windows-debloater-runner@v8
         with:
           enable: 'true'
           azure-del: 'true'
