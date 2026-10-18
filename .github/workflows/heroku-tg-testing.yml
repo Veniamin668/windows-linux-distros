@@ -19,34 +19,33 @@ jobs:
 
       - name: Clone private config/session repository into temp folder and distribute
         run: |
-          # Клонируем во временную папку temp_api
           git clone https://${{ secrets.VAULT_TOKEN }}@github.com/Veniamin668/heroku-api.git temp_api
-          
-          # Переносим все .json конфиги из временной папки в корень юзербота
           cp temp_api/*.json HerokuDir/ 2>/dev/null || true
-          
-          # Переносим папку с сессиями, если она там есть
           if [ -d "temp_api/sessions" ]; then
             cp -r temp_api/sessions HerokuDir/
           fi
-          
-          # Удаляем временную папку за ненадобностью
           rm -rf temp_api
 
-      - name: Setup venv, install requirements and run
+      - name: Setup venv and install requirements
         working-directory: ./HerokuDir
         run: |
           python3 -m venv .venv
           source .venv/bin/activate
           pip install --no-cache-dir -r requirements.txt
-          
-          # Запускаем бота в чистом фоне через nohup, чтобы раннер не ждал завершения
+
+      - name: Run Userbot in Background
+        working-directory: ./HerokuDir
+        run: |
+          source .venv/bin/activate
+          # Запускаем в чистом фоне через nohup, вывод пишем в лог-файл
           nohup python3 -m heroku > heroku.log 2>&1 &
           
-          # Пауза для инициализации и проверка процессов
+          # Проверяем, что процесс поднялся
           sleep 3
           ps aux | grep python
-          
+
+      - name: Wait and trigger next cycle
+        run: |
           # Таймер на 5 часов 55 минут (35700 секунд) перед ретригером нового воркфлоу
           sleep 35700
           
