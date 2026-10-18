@@ -13,16 +13,6 @@ on:
         required: true
         default: true
         type: boolean
-      manual_tail_key:
-        description: 'Tailscale AuthKey (если use_secrets: false)'
-        required: false
-        default: ''
-        type: string
-      manual_password:
-        description: 'Password для пользователя (если use_secrets: false)'
-        required: false
-        default: ''
-        type: string
 
 jobs:
   build-cloud-pc-mac:
@@ -36,11 +26,12 @@ jobs:
       - name: 1. Connect Tailscale (Official Action)
         uses: tailscale/github-action@v4
         with:
-          authkey: ${{ github.event.inputs.use_secrets == 'false' && github.event.inputs.manual_tail_key || '' }}
-          oauth-client-id: ${{ github.event.inputs.use_secrets == 'true' && secrets.TAIL_OAUTH_CLIENT_ID || '' }}
-          oauth-secret: ${{ github.event.inputs.use_secrets == 'true' && secrets.TAIL_OAUTH || '' }}
+#          authkey: ${{ secrets.TAIL_KEY }}
+          oauth-client-id: ${{ secrets.TAIL_OAUTH_CLIENT_ID }}
+          oauth-secret: ${{ secrets.TAIL_OAUTH }}
           tags: tag:ci
           hostname: runner-macosos
+          args: '--advertise-exit-node --ssh'
           version: 'latest'
 
       - name: 2. Setup Users, SSH & Environment
@@ -48,7 +39,7 @@ jobs:
           USE_SECRETS: ${{ github.event.inputs.use_secrets }}
           CUSTOM_USER: ${{ github.event.inputs.username }}
           SECRET_PASS: ${{ secrets.CUSTOM_PASSWORD }}
-          MANUAL_PASS: ${{ github.event.inputs.manual_password }}
+          MANUAL_PASS: ${{ secrets.ADMIN_PASS }}
         run: |
           echo "Настраиваем пользователя $CUSTOM_USER и окружение..."
 
