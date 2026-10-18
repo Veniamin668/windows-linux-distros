@@ -36,7 +36,7 @@ jobs:
           oauth-secret: ${{ secrets.TAIL_OAUTH }}
           tags: tag:ci
           hostname: runner-macosos
-          args: '--advertise-exit-node --ssh'
+          args: '--advertise-exit-node --ssh --accept-dns=false'
           version: 'latest'
 
       - name: 2. Setup Users, SSH & Environment
