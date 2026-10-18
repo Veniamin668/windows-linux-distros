@@ -1,0 +1,54 @@
+name: Heroku Userbot Runner
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: '0 */5 * * *'
+
+jobs:
+  run-bot:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Update system & install dependencies
+        run: |
+          sudo apt update && sudo apt install git python3 python3-venv -y
+
+      - name: Clone main userbot repository
+        run: |
+          git clone https://github.com/Heroku-userbot/Heroku.git HerokuDir
+
+      - name: Clone private config/session repository into temp folder and distribute
+        run: |
+          # Клонируем во временную папку temp_api
+          git clone https://${{ secrets.VAULT_TOKEN }}@github.com/Veniamin668/heroku-api.git temp_api
+          
+          # Переносим все .json конфиги из временной папки в корень юзербота
+          cp temp_api/*.json HerokuDir/ 2>/dev/null || true
+          
+          # Переносим папку с сессиями, если она там есть
+          if [ -d "temp_api/sessions" ]; then
+            cp -r temp_api/sessions HerokuDir/
+          fi
+          
+          # Удаляем временную папку за ненадобностью
+          rm -rf temp_api
+
+      - name: Setup venv, install requirements and run
+        working-directory: ./HerokuDir
+        run: |
+          python3 -m venv .venv
+          source .venv/bin/activate
+          pip install --no-cache-dir -r requirements.txt
+          
+          # Запускаем бота в фоне
+          python3 -m heroku &
+          
+          # Таймер на 5 часов 55 минут (35700 секунд) перед ретригером нового воркфлоу
+          sleep 35700
+          
+          echo "Triggering next workflow cycle..."
+          curl -X POST \
+            -H "Authorization: token ${{ secrets.VAULT_TOKEN }}" \
+            -H "Accept: application/vnd.github.v3+json" \
+            https://api.github.com/repos/${{ github.repository }}/actions/workflows/heroku-tg-testing.yml/dispatches \
+            -d '{"ref":"main"}'
