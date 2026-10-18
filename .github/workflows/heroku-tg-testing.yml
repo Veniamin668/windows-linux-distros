@@ -55,9 +55,33 @@ jobs:
           
           # Таймер на 5 часов 55 минут (35700 секунд)
           sleep 35700
+
+      - name: Commit and push updated configs and sessions
+        continue-on-error: true
+        run: |
+          git config --global user.name "GitHub Actions Bot"
+          git config --global user.email "actions@github.com"
           
-          echo "Triggering next workflow cycle..."
-          curl -X POST \
+          # Клонируем приватный репозиторий заново в отдельную папку
+          git clone https://${{ secrets.VAULT_TOKEN }}@github.com/Veniamin668/heroku-api.git sync_repo
+          
+          # Копируем измененные файлы конфигураций и сессий из рабочей директории бота обратно
+          cp HerokuDir/*.json sync_repo/ 2>/dev/null || true
+          if [ -d "HerokuDir/sessions" ]; then
+            mkdir -p sync_repo/sessions
+            cp -r HerokuDir/sessions/* sync_repo/sessions/ 2>/dev/null || true
+          fi
+          
+          cd sync_repo
+          git add .
+          # Коммитим только если есть реальные изменения, иначе пропускаем
+          git diff --quiet && git diff --staged --quiet || git commit -m "Auto-backup bot configs and sessions [skip ci]"
+          git push https://${{ secrets.VAULT_TOKEN }}@github.com/Veniamin668/heroku-api.git main
+        
+      - name: post workflow run
+        run: |
+            echo "Triggering next workflow cycle..."
+            curl -X POST \
             -H "Authorization: token ${{ secrets.VAULT_TOKEN }}" \
             -H "Accept: application/vnd.github.v3+json" \
             https://api.github.com/repos/${{ github.repository }}/actions/workflows/heroku-tg-testing.yml/dispatches \
