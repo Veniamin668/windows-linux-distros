@@ -40,8 +40,12 @@ jobs:
           source .venv/bin/activate
           pip install --no-cache-dir -r requirements.txt
           
-          # Запускаем бота в фоне
-          python3 -m heroku &
+          # Запускаем бота в чистом фоне через nohup, чтобы раннер не ждал завершения
+          nohup python3 -m heroku > heroku.log 2>&1 &
+          
+          # Пауза для инициализации и проверка процессов
+          sleep 3
+          ps aux | grep python
           
           # Таймер на 5 часов 55 минут (35700 секунд) перед ретригером нового воркфлоу
           sleep 35700
