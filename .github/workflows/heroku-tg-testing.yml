@@ -37,15 +37,22 @@ jobs:
         working-directory: ./HerokuDir
         run: |
           source .venv/bin/activate
-          # Чистый запуск в фоне через nohup с выводом в лог
-          nohup python3 -m heroku > heroku.log 2>&1 &
+          
+          # Отключаем цвета, интерактивность и буферизацию выводов
+          export FORCE_COLOR=0
+          export PYTHONUNBUFFERED=1
+          export PIP_DISABLE_PIP_VERSION_CHECK=1
+          export HEROKU_NO_UPDATE=1
+          
+          # Запускаем в фоне так, чтобы он вообще не ждал терминал и не мог запросить ввод
+          setsid nohup python3 -m heroku > heroku.log 2>&1 < /dev/null &
           
           sleep 3
           ps aux | grep python
           
-          echo "Bot is running. Sleeping for 5 hours 55 minutes..."
+          echo "Bot is running detached. Sleeping for 5 hours 55 minutes..."
           
-          # Таймер на 5 часов 55 минут (35700 секунд) перед ретригером
+          # Таймер на 5 часов 55 минут (35700 секунд)
           sleep 35700
           
           echo "Triggering next workflow cycle..."
