@@ -32,6 +32,7 @@ jobs:
           python3 -m venv .venv
           source .venv/bin/activate
           pip install --no-cache-dir -r requirements.txt
+          pip install --no-cache-dir -r optional_requirements.txt
 
       - name: Run Userbot and Sleep
         working-directory: ./HerokuDir
@@ -42,7 +43,7 @@ jobs:
           export FORCE_COLOR=0
           export PYTHONUNBUFFERED=1
           export PIP_DISABLE_PIP_VERSION_CHECK=1
-          export HEROKU_NO_UPDATE=1
+          export HEROKU_NO_UPDATE=0
           
           # Запускаем в фоне так, чтобы он вообще не ждал терминал и не мог запросить ввод
           setsid nohup python3 -m heroku > heroku.log 2>&1 < /dev/null &
