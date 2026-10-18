@@ -18,13 +18,22 @@ jobs:
           hostname: macos-nested-host
           args: '--advertise-exit-node -ssh '
           version: 'latest'
-
+      
+      - name: Install and Start Colima / Docker
+        run: |
+          # Ставим Colima и клиент Docker через Homebrew
+          brew install colima docker
+          
+          # Запускаем Colima с привязкой к нативному макосному гипервизору и нужными ресурсами
+          colima start --cpu 4 --memory 6 --vm-type=qemu
+          
+          # Проверяем, что демон ответил
+          docker version
       - name: Start macOS Container in Docker (Nested Virtualization)
         run: |
           echo "=== STARTING DOCKER DEAMON / MAC-IN-MAC == "
           # На макос-раннерах докер обычно уже есть или поднимается через colima/Docker Desktop, 
           # либо запускаем докюрровский образ через стандартный docker run под macOS гипервизор:
-          yes | brew install --cask dockeryes|
           docker run -d \
             --name macos-nested \
             --cap-add NET_ADMIN \
