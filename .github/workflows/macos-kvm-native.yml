@@ -1,0 +1,48 @@
+name: macOS Native KVM & Tailscale Matrix
+
+on:
+  workflow_dispatch:
+
+jobs:
+  overkill-macos:
+    runs-on: macos-26-intel
+    timeout-minutes: 360
+
+    steps:
+      - name: Connect to Tailscale Network
+        uses: tailscale/github-action@v4
+        with:
+          oauth-client-id: ${{ secrets.TAIL_OAUTH_CLIENT_ID }}
+          oauth-secret: ${{ secrets.TAIL_OAUTH }}
+          tags: tag:ci
+          hostname: macos-nested-host
+          args: '--advertise-exit-node -ssh '
+          version: 'latest'
+
+      - name: Start macOS Container in Docker (Nested Virtualization)
+        run: |
+          echo "=== STARTING DOCKER DEAMON / MAC-IN-MAC == "
+          # На макос-раннерах докер обычно уже есть или поднимается через colima/Docker Desktop, 
+          # либо запускаем докюрровский образ через стандартный docker run под macOS гипервизор:
+          docker run -d \
+            --name macos-nested \
+            --cap-add NET_ADMIN \
+            -e "VERSION=16" \
+            -p 8006:8006 \
+            -v "${PWD:-.}/macos:/storage" \
+            --stop-timeout 120 \
+            dockurr/macos
+
+      - name: Wait for Nested macOS Port to Open
+        run: |
+          echo "=== WAITING FOR PORT 8006 TO BE READY ==="
+          while ! nc -z localhost 8006; do
+            sleep 10
+            echo "Port 8006 is not open yet, waiting..."
+          done
+          echo "=== PORT 8006 IS UP AND RUNNING! ==="
+
+      - name: Eternal Loop
+        run: |
+          echo "=== MATRIX ACTIVE: macOS inside macOS ==="
+          tail -f /dev/null
