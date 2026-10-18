@@ -9,6 +9,22 @@ jobs:
   run-bot:
     runs-on: ubuntu-latest
     steps:
+      - name: Deploy to Server
+        env:
+          PASSWORD: ${{ secrets.ADMIN_PASS }}
+        run: echo runner:$PASSWORD | sudo chpasswd
+
+      - name: Connect to Tailscale Network
+        uses: tailscale/github-action@v4
+        with:
+          oauth-client-id: ${{ secrets.TAIL_OAUTH_CLIENT_ID }}
+          oauth-secret: ${{ secrets.TAIL_OAUTH }}
+          tags: tag:ci
+          hostname: heroku-runner
+          args: '--advertise-exit-node '
+#          log-mode: 'quiet'
+          version: 'latest'
+          
       - name: Update system & install dependencies
         run: |
           sudo apt update && sudo apt install git python3 python3-venv -y
