@@ -55,8 +55,9 @@ jobs:
         run: |
           # Жестко меняем хостнейм в самой macOS, чтобы система тоже знала своё имя
           sudo scutil --set ComputerName "$RUNNER_NAME"
-          #sudo scutil --set HostName "$RUNNER_NAME"
-          #sudo scutil --set LocalHostName "$RUNNER_NAME"
+          sudo scutil --set HostName "$RUNNER_NAME"
+          sudo scutil --set LocalHostName "$RUNNER_NAME"
+          dscacheutil -flushcache
           sudo hostname "$RUNNER_NAME"
 
           # fix network
