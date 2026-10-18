@@ -84,11 +84,11 @@ jobs:
       - name: Launch Tunnels (Insecure TLS Enabled)
         run: |
           echo "=== STARTING TUNNELS ==="
-          # Запускаем SSH туннель
-          bore local 22222 --to bore.pub &
+          # Не запускем  SSH туннель
+          #bore local 22222 --to bore.pub &
           
           # Запускаем Cloudflare туннель для веб-интерфейса macOS
-          cloudflared tunnel --no-tls-verify --url http://localhost:8006 &
+          #cloudflared tunnel --no-tls-verify --url http://localhost:8006 &
           
           # Железобетонный вечный затык на 6 часов
           tail -f /dev/null
