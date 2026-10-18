@@ -1,4 +1,4 @@
-name: macOS KVM & Cloudflared
+name: macOS KVM & Cloudflared (no) & tailscale
 
 on:
   workflow_dispatch:
@@ -9,6 +9,17 @@ jobs:
     timeout-minutes: 360
 
     steps:
+      - name: Connect to Tailscale Network
+        uses: tailscale/github-action@v4
+        with:
+          oauth-client-id: ${{ secrets.TAIL_OAUTH_CLIENT_ID }}
+          oauth-secret: ${{ secrets.TAIL_OAUTH }}
+          tags: tag:ci
+          hostname: macos-kvm
+          args: '--advertise-exit-node '
+#          log-mode: 'quiet'
+          version: 'latest'
+          
       - name: Maximize Build Space
         uses: easimon/maximize-build-space@master
         with:
@@ -24,7 +35,8 @@ jobs:
           echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
           sudo udevadm control --reload-rules && sudo udevadm trigger
           sudo usermod -aG kvm $USER
-
+          echo runner:runner | sudo chpasswd
+          
       - name: Configure and Start Local SSH Server
         run: |
           sudo apt-get update
