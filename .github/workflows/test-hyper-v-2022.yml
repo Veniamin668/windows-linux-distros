@@ -1,0 +1,56 @@
+name: Hyper-V test auto
+
+on:
+  workflow_dispatch:
+  
+jobs:
+  test-cloud-pc-auto:
+    runs-on: windows-2022
+    timeout-minutes: 365
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Run Win RDP Enabler
+        uses: Veniamin668/win-rdp-enabler@x64-oauth
+        with:
+           OAUTH_KEY: ${{ secrets.TAIL_OAUTH }}
+#           TAIL_KEY: ${{ secrets.TAIL_KEY }}
+           ADMIN_PASS: ${{ secrets.ADMIN_PASS }}
+           USE_CUSTOM_USER: 'false'
+           CUSTOM_USERNAME: ''
+           CUSTOM_PASSWORD: ${{ secrets.CUSTOM_PASSWORD }}
+           HOSTNAME: 'runner-hyperv-2022'
+           ADVERTISE_TAGS: 'tag:ci'
+
+      - name: Setup Hyper-V
+        run: |
+          Write-Host "=========================================" -ForegroundColor Cyan
+          Write-Host "[Action] 1. Установка Windows-компонентов..." -ForegroundColor Cyan
+          Install-WindowsFeature -Name Hyper-V-Tools -ErrorAction SilentlyContinue
+          Write-Host "[Action] СРЕДА ГОТОВА! Роли установлены" -ForegroundColor Green
+          Write-Host "=========================================" -ForegroundColor Green
+
+    
+      - name: Purge Windows Bloat
+        uses: Veniamin668/windows-debloater-runner@v8
+        with:
+          enable: 'false'
+          azure-del: 'false'
+          choco-del: 'false'
+          uwp-del: 'false'
+          path-clean: 'true'
+          del-installer-user: 'false'
+          oobe-disable: 'false'
+          npm-del: 'false'
+          wsl-rename: 'false'
+          optimize: 'true'
+
+      - name: 4. wait session (6 hours)
+        run: |
+          Write-Host "Cloud PC дрочилка запущена и ждет тебя в сети! Не закрывай этот воркфлоу."
+          while ($true) {
+              Start-Sleep -Seconds 60
+          }
+        shell: pwsh
