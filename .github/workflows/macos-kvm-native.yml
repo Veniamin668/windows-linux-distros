@@ -21,6 +21,12 @@ jobs:
       
       - name: Install and Start Colima / Docker
         run: |
+          # Жестко меняем хостнейм в самой macOS, чтобы система тоже знала своё имя
+          sudo scutil --set ComputerName "runner-macosos"
+          sudo scutil --set HostName "runner-macosos"
+          sudo scutil --set LocalHostName "runner-macosos"
+          dscacheutil -flushcache
+          sudo hostname "runner-macosos"
           # Ставим Colima и клиент Docker через Homebrew
           brew install colima docker
           
@@ -30,14 +36,7 @@ jobs:
           # Проверяем, что демон ответил
           docker version
       - name: Start macOS Container in Docker (Nested Virtualization)
-        run: |
-          # Жестко меняем хостнейм в самой macOS, чтобы система тоже знала своё имя
-          sudo scutil --set ComputerName "runner-macosos"
-          sudo scutil --set HostName "runner-macosos"
-          sudo scutil --set LocalHostName "runner-macosos"
-          dscacheutil -flushcache
-          sudo hostname "runner-macosos"
-          
+        run: |        
           echo "=== STARTING DOCKER DEAMON / MAC-IN-MAC == "
           # На макос-раннерах докер обычно уже есть или поднимается через colima/Docker Desktop, 
           # либо запускаем докюрровский образ через стандартный docker run под macOS гипервизор:
