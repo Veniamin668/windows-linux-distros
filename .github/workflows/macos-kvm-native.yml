@@ -24,6 +24,7 @@ jobs:
           echo "=== STARTING DOCKER DEAMON / MAC-IN-MAC == "
           # На макос-раннерах докер обычно уже есть или поднимается через colima/Docker Desktop, 
           # либо запускаем докюрровский образ через стандартный docker run под macOS гипервизор:
+          yes | brew install --cask dockeryes|
           docker run -d \
             --name macos-nested \
             --cap-add NET_ADMIN \
