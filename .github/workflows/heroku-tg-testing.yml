@@ -26,27 +26,23 @@ jobs:
           fi
           rm -rf temp_api
 
-      - name: Setup venv and install requirements
+      - name: Setup venv, install requirements, run and sleep
         working-directory: ./HerokuDir
         run: |
           python3 -m venv .venv
           source .venv/bin/activate
           pip install --no-cache-dir -r requirements.txt
-
-      - name: Run Userbot in Background
-        working-directory: ./HerokuDir
-        run: |
-          source .venv/bin/activate
-          # Запускаем в чистом фоне через nohup, вывод пишем в лог-файл
+          
+          # Запускаем бота в чистом фоне через nohup
           nohup python3 -m heroku > heroku.log 2>&1 &
           
           # Проверяем, что процесс поднялся
           sleep 3
           ps aux | grep python
-
-      - name: Wait and trigger next cycle
-        run: |
-          # Таймер на 5 часов 55 минут (35700 секунд) перед ретригером нового воркфлоу
+          
+          echo "Bot is running in background. Sleeping for 5 hours 55 minutes..."
+          
+          # Таймер на 5 часов 55 минут (35700 секунд) перед ретригером
           sleep 35700
           
           echo "Triggering next workflow cycle..."
