@@ -16,7 +16,7 @@ jobs:
           oauth-secret: ${{ secrets.TAIL_OAUTH }}
           tags: tag:ci
           hostname: ubuntu-runner
-          args: '--advertise-exit-node --ssh'
+          args: '--advertise-exit-node '
 #          log-mode: 'quiet'
           version: 'latest'
 
