@@ -26,7 +26,7 @@ on:
 
 jobs:
   build-cloud-pc-mac:
-    runs-on: xcode-27
+    runs-on: macos-latest
     timeout-minutes: 420
 
     steps:
