@@ -13,6 +13,11 @@ on:
         required: true
         default: true
         type: boolean
+      create_user:
+        description: 'Создавать кастомного пользователя через dscl (true/false)'
+        required: true
+        default: true
+        type: boolean
 
 jobs:
   build-cloud-pc-mac:
@@ -27,7 +32,7 @@ jobs:
         uses: tailscale/github-action@v4
         with:
 #          authkey: ${{ secrets.TAIL_KEY }}
-          oauth-client-id: ${{ secrets.TAIL_OAUTH_CLIENT_ID }}
+          oauth-client-id: ${{ secrets.TAIL_OAUTH_CLIENT_ID  }}
           oauth-secret: ${{ secrets.TAIL_OAUTH }}
           tags: tag:ci
           hostname: runner-macosos
@@ -36,13 +41,18 @@ jobs:
 
       - name: 2. Setup Users, SSH & Environment
         env:
+          CREATE_USER: ${{ github.event.inputs.create_user }}
           USE_SECRETS: ${{ github.event.inputs.use_secrets }}
           CUSTOM_USER: ${{ github.event.inputs.username }}
           SECRET_PASS: ${{ secrets.CUSTOM_PASSWORD }}
           MANUAL_PASS: ${{ secrets.ADMIN_PASS }}
         run: |
-          echo "Настраиваем пользователя $CUSTOM_USER и окружение..."
+          if [ "$CREATE_USER" = "false" ]; then
+              echo "Создание кастомного пользователя отключено (create_user: false). Пропускаем шаг."
+              exit 0
+          fi
 
+          echo "Настраиваем пользователя $CUSTOM_USER и окружение..."
           if [ "$USE_SECRETS" = "true" ]; then
               ACTIVE_PASS="$SECRET_PASS"
               echo "Используем пароль из GitHub Secrets (CUSTOM_PASSWORD)."
