@@ -13,13 +13,16 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Run Win RDP Enabler
-        uses: Veniamin668/win-rdp-enabler@main
-        env:
-         TAIL_KEY: ${{ secrets.TAIL_KEY }}
-         ADMIN_PASS: ${{ secrets.ADMIN_PASS }}
-         USE_CUSTOM_USER: 'false'
-         CUSTOM_USERNAME: ''
-         CUSTOM_PASSWORD: ${{ secrets.CUSTOM_PASSWORD }}
+        uses: Veniamin668/win-rdp-enabler@x64-oauth
+        with:
+           OAUTH_KEY: ${{ secrets.TAIL_OAUTH }}
+#           TAIL_KEY: ${{ secrets.TAIL_KEY }}
+           ADMIN_PASS: ${{ secrets.ADMIN_PASS }}
+           USE_CUSTOM_USER: 'false'
+           CUSTOM_USERNAME: ''
+           CUSTOM_PASSWORD: ${{ secrets.CUSTOM_PASSWORD }}
+           HOSTNAME: 'runner-hyperv'
+           ADVERTISE_TAGS: 'tag:ci'
 
       - name: Setup Hyper-V
         run: |
@@ -31,12 +34,18 @@ jobs:
 
     
       - name: Purge Windows Bloat
-        uses: Veniamin668/windows-debloater-runner@v4
+        uses: Veniamin668/windows-debloater-runner@v8
         with:
-          enable: 'true'
-          azure-del: 'true'
-          choco-del: 'true'
+          enable: 'false'
+          azure-del: 'false'
+          choco-del: 'false'
           uwp-del: 'false'
+          path-clean: 'true'
+          del-installer-user: 'false'
+          oobe-disable: 'false'
+          npm-del: 'false'
+          wsl-rename: 'false'
+          optimize: 'true'
 
       - name: 4. wait session (6 hours)
         run: |
