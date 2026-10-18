@@ -6,7 +6,7 @@ on:
       runner_name:
         description: 'Кастомный hostname раннера'
         required: true
-        default: 'runner-macosos'
+        default: 'macos-runner'
         type: string
       username:
         description: 'name custom user'
