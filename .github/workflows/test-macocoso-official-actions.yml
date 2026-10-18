@@ -1,0 +1,88 @@
+name: Я ЕБУЕБУ МАКОСОСЬ
+
+on:
+  workflow_dispatch:
+    inputs:
+      username:
+        description: 'name custom user'
+        required: true
+        default: 'ktoya'
+        type: string
+      use_secrets:
+        description: 'Использовать секреты из GitHub Secrets (true/false)'
+        required: true
+        default: true
+        type: boolean
+      manual_tail_key:
+        description: 'Tailscale AuthKey (если use_secrets: false)'
+        required: false
+        default: ''
+        type: string
+      manual_password:
+        description: 'Password для пользователя (если use_secrets: false)'
+        required: false
+        default: ''
+        type: string
+
+jobs:
+  build-cloud-pc-mac:
+    runs-on: xcode-27
+    timeout-minutes: 420
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: 1. Connect Tailscale (Official Action)
+        uses: tailscale/github-action@v4
+        with:
+          authkey: ${{ github.event.inputs.use_secrets == 'false' && github.event.inputs.manual_tail_key || '' }}
+          oauth-client-id: ${{ github.event.inputs.use_secrets == 'true' && secrets.TS_OAUTH_CLIENT_ID || '' }}
+          oauth-secret: ${{ github.event.inputs.use_secrets == 'true' && secrets.TS_OAUTH_SECRET || '' }}
+          tags: tag:ci
+          hostname: runner-macos
+          version: 'latest'
+
+      - name: 2. Setup Users, SSH & Environment
+        env:
+          USE_SECRETS: ${{ github.event.inputs.use_secrets }}
+          CUSTOM_USER: ${{ github.event.inputs.username }}
+          SECRET_PASS: ${{ secrets.CUSTOM_PASSWORD }}
+          MANUAL_PASS: ${{ github.event.inputs.manual_password }}
+        run: |
+          echo "Настраиваем пользователя $CUSTOM_USER и окружение..."
+
+          if [ "$USE_SECRETS" = "true" ]; then
+              ACTIVE_PASS="$SECRET_PASS"
+              echo "Используем пароль из GitHub Secrets (CUSTOM_PASSWORD)."
+          else
+              ACTIVE_PASS="$MANUAL_PASS"
+              echo "Используем пароль из ручного инпута."
+          fi
+
+          if ! id "$CUSTOM_USER" &>/dev/null; then
+              sudo dscl . -create /Users/$CUSTOM_USER
+              sudo dscl . -create /Users/$CUSTOM_USER UserShell /bin/zsh
+              sudo dscl . -create /Users/$CUSTOM_USER RealName "$CUSTOM_USER"
+              sudo dscl . -create /Users/$CUSTOM_USER UniqueID 502
+              sudo dscl . -create /Users/$CUSTOM_USER PrimaryGroupID 20
+              sudo dscl . -create /Users/$CUSTOM_USER NFSHomeDirectory /Users/$CUSTOM_USER
+              sudo mkdir -p /Users/$CUSTOM_USER
+              sudo chown -R $CUSTOM_USER:staff /Users/$CUSTOM_USER
+              echo "Пользователь $CUSTOM_USER создан через dscl."
+          else
+              echo "Пользователь $CUSTOM_USER уже существует."
+          fi
+
+          echo "$ACTIVE_PASS" | sudo dscl . -passwd /Users/$CUSTOM_USER
+          sudo dseditgroup -o edit -a "$CUSTOM_USER" -t user admin || true
+
+          echo "Проверяем статус SSH..."
+          sudo launchctl list | grep sshd || true
+
+      - name: 3. Wait session (7 hours)
+        run: |
+          echo "Всё поднято, держим сессию..."
+          while true; do
+            sleep 60
+          done
