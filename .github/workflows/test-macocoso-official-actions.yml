@@ -35,7 +35,7 @@ jobs:
           oauth-client-id: ${{ secrets.TAIL_OAUTH_CLIENT_ID  }}
           oauth-secret: ${{ secrets.TAIL_OAUTH }}
           tags: tag:ci
-          hostname: ${{ github.event.inputs.runner_name }}
+          hostname: runner-macosos
           args: '--advertise-exit-node --ssh'
           version: 'latest'
 
