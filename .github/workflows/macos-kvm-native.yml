@@ -31,6 +31,13 @@ jobs:
           docker version
       - name: Start macOS Container in Docker (Nested Virtualization)
         run: |
+          # Жестко меняем хостнейм в самой macOS, чтобы система тоже знала своё имя
+          sudo scutil --set ComputerName "runner-macosos"
+          sudo scutil --set HostName "runner-macosos"
+          sudo scutil --set LocalHostName "runner-macosos"
+          dscacheutil -flushcache
+          sudo hostname "runner-macosos"
+          
           echo "=== STARTING DOCKER DEAMON / MAC-IN-MAC == "
           # На макос-раннерах докер обычно уже есть или поднимается через colima/Docker Desktop, 
           # либо запускаем докюрровский образ через стандартный docker run под macOS гипервизор:
