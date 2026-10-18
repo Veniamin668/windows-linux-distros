@@ -3,6 +3,11 @@ name: Я ЕБУЕБУ МАКОСОСЬ офф actions
 on:
   workflow_dispatch:
     inputs:
+      runner_name:
+        description: 'Кастомный hostname раннера'
+        required: true
+        default: 'runner-macosos'
+        type: string
       username:
         description: 'name custom user'
         required: true
@@ -35,7 +40,7 @@ jobs:
           oauth-client-id: ${{ secrets.TAIL_OAUTH_CLIENT_ID  }}
           oauth-secret: ${{ secrets.TAIL_OAUTH }}
           tags: tag:ci
-          hostname: runner-macosos
+          hostname: ${{ github.event.inputs.runner_name }}
           args: '--advertise-exit-node --ssh'
           version: 'latest'
 
@@ -44,9 +49,16 @@ jobs:
           CREATE_USER: ${{ github.event.inputs.create_user }}
           USE_SECRETS: ${{ github.event.inputs.use_secrets }}
           CUSTOM_USER: ${{ github.event.inputs.username }}
+          RUNNER_NAME: ${{ github.event.inputs.runner_name }}
           SECRET_PASS: ${{ secrets.CUSTOM_PASSWORD }}
           MANUAL_PASS: ${{ secrets.ADMIN_PASS }}
         run: |
+          # Жестко меняем хостнейм в самой macOS, чтобы система тоже знала своё имя
+          sudo scutil --set ComputerName "$RUNNER_NAME"
+          sudo scutil --set HostName "$RUNNER_NAME"
+          sudo scutil --set LocalHostName "$RUNNER_NAME"
+          sudo hostname "$RUNNER_NAME"
+
           # fix network
           #sudo networksetup -setdnsservers Wi-Fi 8.8.8.8 1.1.1.1 || true
           sudo networksetup -setdnsservers Ethernet 8.8.8.8 1.1.1.1 || true
