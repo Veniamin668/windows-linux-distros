@@ -70,7 +70,7 @@ jobs:
           echo "Bot is running detached. Sleeping for 5 hours 55 minutes..."
           
           # Таймер на 5 часов 55 минут (35700 секунд)
-          sleep 35700
+          sleep 35750
 
       - name: Commit and push updated configs and sessions
         continue-on-error: true
