@@ -62,7 +62,7 @@ jobs:
           # fix network
           #sudo networksetup -setdnsservers Wi-Fi 8.8.8.8 1.1.1.1 || true
           sudo networksetup -setdnsservers Ethernet 8.8.8.8 1.1.1.1 || true
-          yes | brew install fastfetch > /dev/null
+          yes | brew install fastfetch > /dev/null 2>&1
           fastfetch
           if [ "$CREATE_USER" = "false" ]; then
               echo "Создание кастомного пользователя отключено (create_user: false). Пропускаем шаг."
