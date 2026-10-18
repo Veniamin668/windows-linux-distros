@@ -1,4 +1,4 @@
-name: Hyper-V test auto
+name: Hyper-V test auto 2022
 
 on:
   workflow_dispatch:
