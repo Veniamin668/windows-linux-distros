@@ -37,10 +37,10 @@ jobs:
         uses: tailscale/github-action@v4
         with:
           authkey: ${{ github.event.inputs.use_secrets == 'false' && github.event.inputs.manual_tail_key || '' }}
-          oauth-client-id: ${{ github.event.inputs.use_secrets == 'true' && secrets.TS_OAUTH_CLIENT_ID || '' }}
-          oauth-secret: ${{ github.event.inputs.use_secrets == 'true' && secrets.TS_OAUTH_SECRET || '' }}
+          oauth-client-id: ${{ github.event.inputs.use_secrets == 'true' && secrets.TAIL_OAUTH_CLIENT_ID || '' }}
+          oauth-secret: ${{ github.event.inputs.use_secrets == 'true' && secrets.TAIL_OAUTH || '' }}
           tags: tag:ci
-          hostname: runner-macos
+          hostname: runner-macosos
           version: 'latest'
 
       - name: 2. Setup Users, SSH & Environment
