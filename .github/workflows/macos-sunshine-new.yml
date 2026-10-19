@@ -146,7 +146,7 @@ jobs:
           PAIR_WEB_TOKEN="$PAIR_WEB_TOKEN" \
           SUNSHINE_USER="$SUNSHINE_USER" \
           SUNSHINE_PASSWORD="$SUNSHINE_PASSWORD" \
-          python3 ./stream.py > /dev/null 2>&1 &
+          python3 ./stream.py
 
           # Короткая пауза для сокета питона
           sleep 2
