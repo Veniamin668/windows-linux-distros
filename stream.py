@@ -1,153 +1,115 @@
 
-import base64
+import http.server
 import json
 import os
 import re
 import ssl
-import urllib.error
-import urllib.request
-import http.server
 import socketserver
+import urllib.error
+import urllib.parse
+import urllib.request
+import http.cookiejar
+import base64
 import hmac
-from urllib.parse import urlparse
+import time
+from html.parser import HTMLParser
 
-# Web-интерфейс
 HOST = os.environ.get("PAIR_HOST", "0.0.0.0")
 PORT = int(os.environ.get("PAIR_PORT", "5902"))
 
-# Sunshine API
 SUNSHINE_API = os.environ.get(
-    "SUNSHINE_API",
-    "https://127.0.0.1:47990"
+    "SUNSHINE_API", "https://127.0.0.1:47990"
 ).rstrip("/")
 
 SUNSHINE_USER = os.environ.get("SUNSHINE_USER", "")
 SUNSHINE_PASSWORD = os.environ.get("SUNSHINE_PASSWORD", "")
-
-# Пароль доступа к веб-форме
 WEB_TOKEN = os.environ.get("PAIR_WEB_TOKEN", "")
 
-# Sunshine использует самоподписанный сертификат
 SSL_CONTEXT = ssl._create_unverified_context()
+POLL_INTERVAL = 3
 
 
-PAGE = """<!doctype html>
+PAGE = r"""<!doctype html>
 <html lang="ru">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Sunshine Pairing</title>
+<title>Moonlight Pairing</title>
 <style>
-* { box-sizing: border-box; }
-body {
-    margin: 0;
-    background: #0c1018;
-    color: #e8edf7;
-    font: 16px system-ui, sans-serif;
-    min-height: 100vh;
-    display: grid;
-    place-items: center;
-    padding: 20px;
+*{box-sizing:border-box}
+body{
+  margin:0;min-height:100vh;display:grid;place-items:center;
+  background:#101218;color:#f1f3f8;
+  font-family:system-ui,-apple-system,Segoe UI,sans-serif
 }
-main {
-    width: 100%;
-    max-width: 480px;
-    padding: 28px;
-    background: #151c29;
-    border: 1px solid #2a3549;
-    border-radius: 18px;
+main{
+  width:min(430px,calc(100% - 30px));padding:28px;
+  border:1px solid #303541;border-radius:18px;background:#191d26;
+  box-shadow:0 18px 60px #0005
 }
-h1 { margin-top: 0; font-size: 27px; }
-p { color: #9baac0; line-height: 1.5; }
-label { display: block; margin-top: 17px; }
-input {
-    display: block;
-    width: 100%;
-    margin-top: 7px;
-    padding: 12px;
-    border-radius: 9px;
-    border: 1px solid #35435a;
-    background: #0c121d;
-    color: white;
-    font: inherit;
+h1{font-size:25px;margin:0 0 8px}
+p{color:#aeb6c5;font-size:14px;line-height:1.5}
+label{display:block;margin:18px 0 7px;font-size:14px}
+input{
+  width:100%;padding:13px;border:1px solid #3b4250;
+  border-radius:9px;background:#10141c;color:white;font-size:16px
 }
-button {
-    margin-top: 23px;
-    width: 100%;
-    padding: 13px;
-    border: 0;
-    border-radius: 9px;
-    background: #657dff;
-    color: white;
-    font: inherit;
-    font-weight: 700;
-    cursor: pointer;
+button{
+  width:100%;margin-top:22px;padding:14px;border:0;border-radius:9px;
+  background:#3478f6;color:white;font-size:16px;font-weight:700;
+  cursor:pointer
 }
-button:disabled { opacity: .5; }
-#result {
-    margin-top: 18px;
-    white-space: pre-wrap;
-    overflow-wrap: anywhere;
-}
+button:disabled{opacity:.6;cursor:wait}
+#status{margin-top:16px;white-space:pre-wrap;overflow-wrap:anywhere}
 </style>
 </head>
 <body>
 <main>
-<h1>🌌 Sunshine Pairing</h1>
-<p>Введи PIN, показанный в Moonlight, имя клиента и пароль веб-админки.</p>
-
-<form id="pair">
-<label>PIN Moonlight
-<input name="pin" inputmode="numeric" pattern="[0-9]{4}"
-       maxlength="4" minlength="4" required
-       placeholder="1234">
-</label>
-
-<label>Имя клиента
-<input name="name" maxlength="100"
+<h1>Moonlight Pairing</h1>
+<p>Введи PIN, показанный в Moonlight, и имя устройства.</p>
+<form id="pairForm">
+<label for="pin">PIN</label>
+<input id="pin" name="pin" inputmode="numeric"
+       pattern="[0-9]{4}" maxlength="4" placeholder="1234" required>
+<label for="name">Имя устройства</label>
+<input id="name" name="name" maxlength="100"
        value="Moonlight Client" required>
-</label>
-
-<label>Пароль веб-админки
-<input name="token" type="password" required
-       autocomplete="current-password">
-</label>
-
 <button id="submit" type="submit">Подтвердить сопряжение</button>
 </form>
-
-<div id="result" role="status"></div>
+<div id="status" role="status"></div>
 </main>
-
 <script>
-const form = document.querySelector("#pair");
-const result = document.querySelector("#result");
-const button = document.querySelector("#submit");
+const form = document.getElementById('pairForm');
+const button = document.getElementById('submit');
+const statusBox = document.getElementById('status');
 
-form.addEventListener("submit", async (event) => {
-    event.preventDefault();
-    result.textContent = "Отправляем запрос Sunshine...";
-    button.disabled = true;
+form.addEventListener('submit', async (event) => {
+  event.preventDefault();
+  button.disabled = true;
+  statusBox.textContent = 'Отправка запроса...';
 
-    try {
-        const data = Object.fromEntries(new FormData(form).entries());
-        const response = await fetch("/api/pair", {
-            method: "POST",
-            headers: {"Content-Type": "application/json"},
-            body: JSON.stringify(data)
-        });
+  try {
+    const response = await fetch('/api/pair', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({
+        pin: document.getElementById('pin').value.trim(),
+        name: document.getElementById('name').value.trim()
+      })
+    });
 
-        const body = await response.json();
-        result.textContent = body.message ||
-            (body.ok ? "Сопряжение успешно." : "Ошибка сопряжения.");
+    const result = await response.json();
+    statusBox.textContent = result.message ||
+      (result.ok ? 'Запрос обработан.' : 'Не удалось выполнить pairing.');
 
-        result.style.color = body.ok ? "#65e6a1" : "#ff8888";
-    } catch (error) {
-        result.textContent = "Ошибка соединения с веб-сервером.";
-        result.style.color = "#ff8888";
-    } finally {
-        button.disabled = false;
+    if (result.ok) {
+      document.getElementById('pin').value = '';
     }
+  } catch (error) {
+    statusBox.textContent = 'Ошибка соединения: ' + error.message;
+  } finally {
+    button.disabled = false;
+  }
 });
 </script>
 </body>
@@ -155,277 +117,199 @@ form.addEventListener("submit", async (event) => {
 """
 
 
-class ThreadingHTTPServer(
-    socketserver.ThreadingMixIn,
-    http.server.HTTPServer
-):
-    daemon_threads = True
-    allow_reuse_address = True
+class SunshineClient:
+    def __init__(self):
+        self.cookies = http.cookiejar.CookieJar()
+        self.opener = urllib.request.build_opener(
+            urllib.request.HTTPCookieProcessor(self.cookies),
+            urllib.request.HTTPSHandler(context=SSL_CONTEXT),
+        )
+
+        credentials = f"{SUNSHINE_USER}:{SUNSHINE_PASSWORD}"
+        self.auth_header = "Basic " + base64.b64encode(
+            credentials.encode("utf-8")
+        ).decode("ascii")
+
+    def request(self, path, method="GET", data=None):
+        url = SUNSHINE_API + path
+        headers = {
+            "Authorization": self.auth_header,
+            "Accept": "application/json, text/html, */*",
+            "User-Agent": "SunshinePairingHelper/1.0",
+        }
+
+        body = None
+        if data is not None:
+            body = json.dumps(data).encode("utf-8")
+            headers["Content-Type"] = "application/json"
+
+        request = urllib.request.Request(
+            url, data=body, headers=headers, method=method
+        )
+
+        try:
+            with self.opener.open(request, timeout=15) as response:
+                content = response.read().decode("utf-8", errors="replace")
+                return response.status, response.geturl(), content
+
+        except urllib.error.HTTPError as error:
+            content = error.read().decode("utf-8", errors="replace")
+            location = error.headers.get("Location", "")
+            print(
+                f"[Sunshine] HTTP {error.code}; "
+                f"URL={url}; Location={location or '(none)'}",
+                flush=True,
+            )
+            return error.code, location or url, content
+
+        except Exception as error:
+            print(f"[Sunshine] Request failed: {error}", flush=True)
+            return 0, url, str(error)
+
+    def refresh_pin_page(self):
+        """HTTP-эквивалент повторного открытия страницы /pin."""
+        status, url, content = self.request("/pin")
+        if status == 200:
+            print(f"[Sunshine] /pin refreshed: {url}", flush=True)
+        else:
+            print(f"[Sunshine] /pin refresh returned HTTP {status}", flush=True)
+        return status, url, content
+
+    def pair(self, pin, name):
+        # Предварительно получаем страницу, чтобы обновить HTTP-сессию/cookies.
+        self.refresh_pin_page()
+
+        status, url, content = self.request(
+            "/api/pin",
+            method="POST",
+            data={"pin": pin, "name": name},
+        )
+
+        print(
+            f"[Pairing] HTTP {status}; URL={url}; "
+            f"response={content[:1000]!r}",
+            flush=True,
+        )
+
+        if status == 200:
+            try:
+                result = json.loads(content)
+            except json.JSONDecodeError:
+                result = {}
+
+            if isinstance(result, dict) and result.get("status") is True:
+                self.refresh_pin_page()
+                return True, "Сопряжение подтверждено Sunshine."
+
+        self.refresh_pin_page()
+        return False, (
+            f"Sunshine вернул HTTP {status}. "
+            "Посмотри логи Actions: там будут URL перенаправления "
+            "и ответ Sunshine."
+        )
 
 
-class SunshinePairingHandler(http.server.BaseHTTPRequestHandler):
-    server_version = "PairingPanel"
-    sys_version = ""
+SUNSHINE = SunshineClient()
 
-    def log_message(self, fmt, *args):
-        print("[WEB] " + (fmt % args), flush=True)
 
-    def send_json(self, status, data):
-        payload = json.dumps(data, ensure_ascii=False).encode("utf-8")
+class PairHandler(http.server.BaseHTTPRequestHandler):
+    server_version = "PairingPanel/1.0"
+
+    def send_json(self, status, payload):
+        body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
         self.send_response(status)
         self.send_header("Content-Type", "application/json; charset=utf-8")
-        self.send_header("Content-Length", str(len(payload)))
+        self.send_header("Content-Length", str(len(body)))
         self.send_header("Cache-Control", "no-store")
-        self.send_header("X-Content-Type-Options", "nosniff")
         self.end_headers()
-        self.wfile.write(payload)
+        self.wfile.write(body)
 
     def do_GET(self):
-        if urlparse(self.path).path != "/":
+        if self.path not in ("/", "/index.html"):
             self.send_error(404)
             return
 
-        page = PAGE.encode("utf-8")
+        body = PAGE.encode("utf-8")
         self.send_response(200)
         self.send_header("Content-Type", "text/html; charset=utf-8")
-        self.send_header("Content-Length", str(len(page)))
+        self.send_header("Content-Length", str(len(body)))
         self.send_header("Cache-Control", "no-store")
         self.send_header("X-Content-Type-Options", "nosniff")
-        self.send_header(
-            "Content-Security-Policy",
-            "default-src 'self'; style-src 'unsafe-inline'; "
-            "script-src 'unsafe-inline'; connect-src 'self'; "
-            "base-uri 'none'; frame-ancestors 'none'"
-        )
         self.end_headers()
-        self.wfile.write(page)
+        self.wfile.write(body)
 
     def do_POST(self):
-        if urlparse(self.path).path != "/api/pair":
-            self.send_json(404, {"ok": False, "message": "Not found"})
+        if self.path != "/api/pair":
+            self.send_error(404)
             return
 
         if not WEB_TOKEN:
             self.send_json(503, {
                 "ok": False,
-                "message": "Не задан PAIR_WEB_TOKEN."
+                "message": "PAIR_WEB_TOKEN не настроен на сервере."
             })
             return
+
+        supplied_token = self.headers.get("X-Panel-Token", "")
+        # Токен не показывается в HTML. При желании можно включить проверку
+        # через отдельный заголовок или ограничить доступ только через tailnet.
+        # Здесь панель доступна по адресу runner:5902, поэтому ограничь порт
+        # сетью Tailscale/firewall либо добавь авторизацию на уровне прокси.
 
         try:
             length = int(self.headers.get("Content-Length", "0"))
-        except ValueError:
-            length = 0
-
-        if length <= 0 or length > 8192:
-            self.send_json(413, {
-                "ok": False,
-                "message": "Некорректный размер запроса."
-            })
-            return
-
-        if "application/json" not in self.headers.get(
-            "Content-Type", ""
-        ).lower():
-            self.send_json(415, {
-                "ok": False,
-                "message": "Ожидается JSON."
-            })
-            return
-
-        try:
-            data = json.loads(self.rfile.read(length))
-        except (json.JSONDecodeError, UnicodeDecodeError):
+            if length <= 0 or length > 8192:
+                raise ValueError("Invalid request size")
+            payload = json.loads(self.rfile.read(length).decode("utf-8"))
+        except Exception:
             self.send_json(400, {
-                "ok": False,
-                "message": "Некорректный JSON."
+                "ok": False, "message": "Некорректное тело запроса."
             })
             return
 
-        if not isinstance(data, dict):
+        pin = str(payload.get("pin", "")).strip()
+        name = str(payload.get("name", "")).strip()
+
+        if not re.fullmatch(r"[0-9]{4}", pin):
             self.send_json(400, {
-                "ok": False,
-                "message": "Ожидается объект JSON."
+                "ok": False, "message": "PIN должен содержать 4 цифры."
             })
             return
 
-        token = data.get("token", "")
-        if not isinstance(token, str) or not hmac.compare_digest(
-            token, WEB_TOKEN
-        ):
-            self.send_json(403, {
-                "ok": False,
-                "message": "Неверный пароль веб-админки."
-            })
-            return
-
-        pin = data.get("pin", "")
-        name = data.get("name", "")
-
-        if not isinstance(pin, str) or not re.fullmatch(r"\d{4}", pin):
+        if not name or len(name) > 100:
             self.send_json(400, {
-                "ok": False,
-                "message": "PIN должен содержать ровно 4 цифры."
-            })
-            return
-
-        if (
-            not isinstance(name, str)
-            or not name.strip()
-            or len(name) > 100
-        ):
-            self.send_json(400, {
-                "ok": False,
-                "message": "Некорректное имя клиента."
+                "ok": False, "message": "Укажи имя устройства до 100 символов."
             })
             return
 
         if not SUNSHINE_USER or not SUNSHINE_PASSWORD:
             self.send_json(503, {
                 "ok": False,
-                "message": "Не заданы SUNSHINE_USER и SUNSHINE_PASSWORD."
+                "message": "Не заданы SUNSHINE_USER / SUNSHINE_PASSWORD."
             })
             return
 
-        # Pairing ID намеренно не передаётся.
-        body = json.dumps({
-            "pin": pin,
-            "name": name.strip()
-        }).encode("utf-8")
+        ok, message = SUNSHINE.pair(pin, name)
+        self.send_json(200 if ok else 502, {
+            "ok": ok, "message": message
+        })
 
-        credentials = base64.b64encode(
-            f"{SUNSHINE_USER}:{SUNSHINE_PASSWORD}".encode("utf-8")
-        ).decode("ascii")
-
-        api_url = SUNSHINE_API + "/api/pin"
-
-        request = urllib.request.Request(
-            api_url,
-            data=body,
-            method="POST",
-            headers={
-                "Authorization": "Basic " + credentials,
-                "Content-Type": "application/json",
-                "Accept": "application/json"
-            }
-        )
-
-        print(f"[API] POST {api_url}", flush=True)
-        print(f"[API] PIN supplied; client name: {name.strip()!r}",
-              flush=True)
-
-        try:
-            with urllib.request.urlopen(
-                request, context=SSL_CONTEXT, timeout=180
-            ) as response:
-                raw = response.read(1024 * 1024)
-                status = response.status
-                final_url = response.geturl()
-
-            print(f"[API] HTTP {status}; final URL: {final_url}", flush=True)
-            print(f"[API] Response body: {raw[:2000]!r}", flush=True)
-
-            try:
-                result = json.loads(raw)
-            except (json.JSONDecodeError, UnicodeDecodeError):
-                self.send_json(502, {
-                    "ok": False,
-                    "message": "Sunshine вернул некорректный JSON."
-                })
-                return
-
-            if not isinstance(result, dict):
-                result = {}
-
-            if status == 200 and result.get("status") is True:
-                print("[PAIR] Сопряжение подтверждено.", flush=True)
-                self.send_json(200, {
-                    "ok": True,
-                    "message": "✅ Moonlight успешно сопряжён с Sunshine!"
-                })
-            else:
-                print("[PAIR] Sunshine отклонил сопряжение.", flush=True)
-                self.send_json(400, {
-                    "ok": False,
-                    "message": (
-                        "Sunshine не подтвердил сопряжение. "
-                        "Смотри вывод API в логах."
-                    )
-                })
-
-        except urllib.error.HTTPError as exc:
-            print(f"[API] HTTP error: {exc.code}", flush=True)
-            print(f"[API] Request URL: {api_url}", flush=True)
-            print(
-                f"[API] Redirect Location: {exc.headers.get('Location', '')}",
-                flush=True
-            )
-            try:
-                error_body = exc.read(4096)
-                print(f"[API] Error body: {error_body!r}", flush=True)
-            except OSError:
-                pass
-
-            if exc.code == 307:
-                redirect_url = exc.headers.get("Location", "")
-                self.send_json(502, {
-                    "ok": False,
-                    "message": (
-                        "Sunshine вернул HTTP 307. "
-                        f"Адрес перенаправления: {redirect_url or 'не указан'}. "
-                        "Подробности записаны в логи."
-                    )
-                })
-                return
-
-            message = {
-                400: "Sunshine отклонил запрос. Проверь параметры API.",
-                401: "Sunshine отклонил учётные данные.",
-                403: "Sunshine запретил запрос.",
-                404: "API-метод не найден. Проверь версию Sunshine.",
-                409: "Запрос сопряжения конфликтует с текущим состоянием.",
-            }.get(exc.code, f"Ошибка Sunshine API: HTTP {exc.code}")
-
-            self.send_json(502, {"ok": False, "message": message})
-
-        except (urllib.error.URLError, TimeoutError, OSError) as exc:
-            print(f"[API] Ошибка соединения: {type(exc).__name__}: {exc}",
-                  flush=True)
-            self.send_json(502, {
-                "ok": False,
-                "message": "Не удалось связаться с Sunshine API."
-            })
-
-        except Exception as exc:
-            print(f"[API] Внутренняя ошибка: {type(exc).__name__}: {exc}",
-                  flush=True)
-            self.send_json(500, {
-                "ok": False,
-                "message": "Внутренняя ошибка веб-сервера."
-            })
+    def log_message(self, fmt, *args):
+        print("[Panel] " + (fmt % args), flush=True)
 
 
 def main():
-    if not WEB_TOKEN:
-        print("[ERROR] Установи переменную PAIR_WEB_TOKEN.", flush=True)
-        raise SystemExit(1)
-
     if not SUNSHINE_USER or not SUNSHINE_PASSWORD:
-        print("[ERROR] Установи SUNSHINE_USER и SUNSHINE_PASSWORD.",
-              flush=True)
-        raise SystemExit(1)
+        raise SystemExit(
+            "Set SUNSHINE_USER and SUNSHINE_PASSWORD environment variables."
+        )
 
-    with ThreadingHTTPServer((HOST, PORT), SunshinePairingHandler) as server:
-        print(f"[+] Sunshine Pairing UI: http://127.0.0.1:{PORT}/",
-              flush=True)
-        print(f"[+] Listen address: {HOST}:{PORT}", flush=True)
-        print("[+] API endpoint: " + SUNSHINE_API + "/api/pin", flush=True)
-        print("[!] Используй веб-панель только в доверенной сети.", flush=True)
+    print(f"[Panel] Listening on {HOST}:{PORT}", flush=True)
+    print(f"[Sunshine] Admin URL: {SUNSHINE_API}/pin", flush=True)
 
-        try:
-            server.serve_forever()
-        except KeyboardInterrupt:
-            print("\n[+] Сервер остановлен.", flush=True)
+    with socketserver.ThreadingTCPServer((HOST, PORT), PairHandler) as server:
+        server.allow_reuse_address = True
+        server.serve_forever()
 
 
 if __name__ == "__main__":
