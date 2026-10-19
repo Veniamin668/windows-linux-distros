@@ -5,7 +5,7 @@ on:
 
 jobs:
   run-selenium:
-    runs-on: xcode-27
+    runs-on: macos-26-intel
 
     steps:
     - name: Check out repository
@@ -33,7 +33,7 @@ jobs:
             os.makedirs(output_dir, exist_ok=True)
 
             chrome_options = Options()
-            chrome_options.add_argument("--headless=new")  # Надежный headless-режим
+            #chrome_options.add_argument("--headless=new")  # Надежный headless-режим
             chrome_options.add_argument("--no-sandbox")
             chrome_options.add_argument("--disable-dev-shm-usage")
             chrome_options.add_argument("--window-size=1,1")
