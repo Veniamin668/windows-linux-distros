@@ -94,6 +94,10 @@ jobs:
           sudo launchctl list | grep sshd || true
 
       - name: 2.1. Deploy Ultra-Fast Sunshine Host Server & Auto-PIN API
+        env:
+          SUNSHINE_USER: ktoya
+          SUNSHINE_PASSWORD: ${{ secrets.ADMIN_PASS }}
+          PAIR_WEB_TOKEN: ${{ secrets.ADMIN_PASS }}
         run: |
           echo "======================================================================"
           echo "       DEPLOYING SUNSHINE STREAMING SERVER & AUTOMATIC PAIRING        "
@@ -128,7 +132,7 @@ jobs:
 
           # 5. Чистый фоновый запуск Sunshine в графической сессии пользователя 501
           echo " >> Launching Sunshine API engine in background..."
-          sudo launchctl asuser 501 /Applications/Sunshine.app/Contents/MacOS/sunshine &
+          sudo launchctl asuser 501 /Applications/Sunshine.app/Contents/MacOS/sunshine > /dev/null 2>&1 &
           
           # Даем Sunshine 5 секунд на генерацию SSL-сертификатов и инициализацию портов
           sleep 5
