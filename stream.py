@@ -1,6 +1,5 @@
 
 import base64
-import html
 import json
 import os
 import re
@@ -9,6 +8,7 @@ import urllib.error
 import urllib.request
 import http.server
 import socketserver
+import hmac
 from urllib.parse import urlparse
 
 # Web-интерфейс
@@ -24,12 +24,10 @@ SUNSHINE_API = os.environ.get(
 SUNSHINE_USER = os.environ.get("SUNSHINE_USER", "")
 SUNSHINE_PASSWORD = os.environ.get("SUNSHINE_PASSWORD", "")
 
-# Обязательно задай отдельный пароль для доступа к этой веб-форме.
-# Не используй пароль Sunshine в качестве этого токена.
+# Пароль доступа к веб-форме
 WEB_TOKEN = os.environ.get("PAIR_WEB_TOKEN", "")
 
-# Sunshine создаёт самоподписанный сертификат.
-# Соединение идёт к локальному API, но проверка сертификата отключена.
+# Sunshine использует самоподписанный сертификат
 SSL_CONTEXT = ssl._create_unverified_context()
 
 PAGE = """<!doctype html>
@@ -95,18 +93,13 @@ button:disabled { opacity: .5; }
 <body>
 <main>
 <h1>🌌 Sunshine Pairing</h1>
-<p>Введи PIN, показанный в Moonlight, и данные запроса сопряжения.</p>
+<p>Введи PIN, показанный в Moonlight, имя клиента и пароль веб-админки.</p>
 
 <form id="pair">
 <label>PIN Moonlight
 <input name="pin" inputmode="numeric" pattern="[0-9]{4}"
        maxlength="4" minlength="4" required
        placeholder="1234">
-</label>
-
-<label>Pairing ID
-<input name="pairing_id" required
-       placeholder="ID запроса Sunshine">
 </label>
 
 <label>Имя клиента
@@ -161,8 +154,10 @@ form.addEventListener("submit", async (event) => {
 """
 
 
-class ThreadingHTTPServer(socketserver.ThreadingMixIn,
-                           http.server.HTTPServer):
+class ThreadingHTTPServer(
+    socketserver.ThreadingMixIn,
+    http.server.HTTPServer
+):
     daemon_threads = True
     allow_reuse_address = True
 
@@ -172,7 +167,6 @@ class SunshinePairingHandler(http.server.BaseHTTPRequestHandler):
     sys_version = ""
 
     def log_message(self, fmt, *args):
-        # Не записываем тела запросов, PIN или токены в логи.
         print("[WEB] " + (fmt % args))
 
     def send_json(self, status, data):
@@ -196,10 +190,12 @@ class SunshinePairingHandler(http.server.BaseHTTPRequestHandler):
         self.send_header("Content-Length", str(len(page)))
         self.send_header("Cache-Control", "no-store")
         self.send_header("X-Content-Type-Options", "nosniff")
-        self.send_header("Content-Security-Policy",
-                         "default-src 'self'; style-src 'unsafe-inline'; "
-                         "script-src 'unsafe-inline'; connect-src 'self'; "
-                         "base-uri 'none'; frame-ancestors 'none'")
+        self.send_header(
+            "Content-Security-Policy",
+            "default-src 'self'; style-src 'unsafe-inline'; "
+            "script-src 'unsafe-inline'; connect-src 'self'; "
+            "base-uri 'none'; frame-ancestors 'none'"
+        )
         self.end_headers()
         self.wfile.write(page)
 
@@ -208,7 +204,6 @@ class SunshinePairingHandler(http.server.BaseHTTPRequestHandler):
             self.send_json(404, {"ok": False, "message": "Not found"})
             return
 
-        # Не оставляем веб-админку без защиты.
         if not WEB_TOKEN:
             self.send_json(503, {
                 "ok": False,
@@ -229,7 +224,8 @@ class SunshinePairingHandler(http.server.BaseHTTPRequestHandler):
             return
 
         if "application/json" not in self.headers.get(
-                "Content-Type", "").lower():
+            "Content-Type", ""
+        ).lower():
             self.send_json(415, {
                 "ok": False,
                 "message": "Ожидается JSON."
@@ -253,8 +249,9 @@ class SunshinePairingHandler(http.server.BaseHTTPRequestHandler):
             return
 
         token = data.get("token", "")
-        if not isinstance(token, str) or not __import__(
-                "hmac").compare_digest(token, WEB_TOKEN):
+        if not isinstance(token, str) or not hmac.compare_digest(
+            token, WEB_TOKEN
+        ):
             self.send_json(403, {
                 "ok": False,
                 "message": "Неверный пароль веб-админки."
@@ -262,7 +259,6 @@ class SunshinePairingHandler(http.server.BaseHTTPRequestHandler):
             return
 
         pin = data.get("pin", "")
-        pairing_id = data.get("pairing_id", "")
         name = data.get("name", "")
 
         if not isinstance(pin, str) or not re.fullmatch(r"\d{4}", pin):
@@ -272,16 +268,11 @@ class SunshinePairingHandler(http.server.BaseHTTPRequestHandler):
             })
             return
 
-        if (not isinstance(pairing_id, str)
-                or not re.fullmatch(r"[a-fA-F0-9]{32}", pairing_id)):
-            self.send_json(400, {
-                "ok": False,
-                "message": "Pairing ID должен содержать 32 hex-символа."
-            })
-            return
-
-        if (not isinstance(name, str)
-                or not name.strip() or len(name) > 100):
+        if (
+            not isinstance(name, str)
+            or not name.strip()
+            or len(name) > 100
+        ):
             self.send_json(400, {
                 "ok": False,
                 "message": "Некорректное имя клиента."
@@ -295,8 +286,8 @@ class SunshinePairingHandler(http.server.BaseHTTPRequestHandler):
             })
             return
 
+        # Pairing ID намеренно не передаётся.
         body = json.dumps({
-            "pairing_id": pairing_id,
             "pin": pin,
             "name": name.strip()
         }).encode("utf-8")
@@ -318,7 +309,8 @@ class SunshinePairingHandler(http.server.BaseHTTPRequestHandler):
 
         try:
             with urllib.request.urlopen(
-                    request, context=SSL_CONTEXT, timeout=180) as response:
+                request, context=SSL_CONTEXT, timeout=180
+            ) as response:
                 raw = response.read(1024 * 1024)
                 status = response.status
 
@@ -346,15 +338,14 @@ class SunshinePairingHandler(http.server.BaseHTTPRequestHandler):
                     "ok": False,
                     "message": (
                         "Sunshine не подтвердил сопряжение. "
-                        "Проверь PIN, Pairing ID и состояние Moonlight."
+                        "Проверь PIN и состояние Moonlight."
                     )
                 })
 
         except urllib.error.HTTPError as exc:
-            # Не возвращаем браузеру тело ошибки: в нём могут быть
-            # диагностические данные Sunshine.
             print(f"[API] Sunshine HTTP error: {exc.code}")
             message = {
+                400: "Sunshine отклонил запрос. Проверь параметры API.",
                 401: "Sunshine отклонил учётные данные.",
                 403: "Sunshine запретил запрос.",
                 404: "API-метод не найден. Проверь версию Sunshine.",
