@@ -42,7 +42,7 @@ jobs:
 
             try:
                 print("Открываем страницу...")
-                driver.get("https://veniamin668.github.io")
+                driver.get("https://veniamin668.github.io/files/sosal1.mp4")
                 print(f"Заголовок страницы: {driver.title}")
 
                 screenshot_path = os.path.join(output_dir, "github_home.png")
