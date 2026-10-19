@@ -189,6 +189,7 @@ class SunshineBrowser:
                 flush=True,
             )
 
+            # WELCOME LOGIC PRESERVED
             if self.is_welcome():
                 self.configure_welcome()
 
@@ -232,6 +233,7 @@ class SunshineBrowser:
             return False
 
     def configure_welcome(self):
+        # Existing Welcome implementation is intentionally unchanged.
         print(
             "[Browser] Welcome detected. Filling administrator form...",
             flush=True,
@@ -310,7 +312,6 @@ class SunshineBrowser:
         )
 
         if login_button.count() == 0:
-            # Fallback for a button whose accessible role/name differs.
             login_button = self.page.locator(
                 "button:visible, input[type='submit']:visible"
             ).filter(
@@ -318,8 +319,6 @@ class SunshineBrowser:
             )
 
         if login_button.count() == 0:
-            # Some HTML forms use an input button with a value instead
-            # of a text-bearing button.
             login_button = self.page.locator(
                 "input[type='button']:visible"
             ).filter(
@@ -339,7 +338,6 @@ class SunshineBrowser:
                 timeout=15000,
             )
         except Exception:
-            # Single-page applications may not trigger navigation.
             pass
 
         self.page.wait_for_timeout(2000)
@@ -348,6 +346,359 @@ class SunshineBrowser:
             f"[Browser] After Login click: {self.page.url}",
             flush=True,
         )
+
+    # --------------------------------------------------------
+    # PIN PAGE HELPERS
+    # --------------------------------------------------------
+
+    @staticmethod
+    def _input_description(locator):
+        values = []
+
+        for attribute in (
+            "name",
+            "id",
+            "placeholder",
+            "aria-label",
+            "autocomplete",
+        ):
+            try:
+                value = locator.get_attribute(attribute)
+
+                if value:
+                    values.append(value)
+            except Exception:
+                pass
+
+        try:
+            input_type = locator.get_attribute("type")
+
+            if input_type:
+                values.append(input_type)
+        except Exception:
+            pass
+
+        return " ".join(values).lower()
+
+    def _find_pin_field(self):
+        selectors = (
+            "input[name='pin']:visible",
+            "input#pin:visible",
+            "input[autocomplete='one-time-code']:visible",
+            "input[inputmode='numeric']:visible",
+            "input[placeholder*='PIN' i]:visible",
+            "input[aria-label*='PIN' i]:visible",
+            "input[name*='pin' i]:visible",
+            "input[id*='pin' i]:visible",
+        )
+
+        for selector in selectors:
+            candidate = self.page.locator(selector)
+
+            if candidate.count() > 0:
+                return candidate.first
+
+        # Fallback: inspect visible, editable inputs.
+        inputs = self.page.locator(
+            "input:visible:not([type='hidden'])"
+        )
+
+        for index in range(inputs.count()):
+            candidate = inputs.nth(index)
+
+            description = self._input_description(candidate)
+
+            if "password" in description:
+                continue
+
+            if "pin" in description or "numeric" in description:
+                return candidate
+
+        return None
+
+    def _find_name_field(self, pin_field):
+        selectors = (
+            "input[name='name']:visible",
+            "input#name:visible",
+            "input[name*='device' i]:visible",
+            "input[id*='device' i]:visible",
+            "input[placeholder*='name' i]:visible",
+            "input[aria-label*='name' i]:visible",
+            "input[name*='name' i]:visible",
+        )
+
+        for selector in selectors:
+            candidates = self.page.locator(selector)
+
+            for index in range(candidates.count()):
+                candidate = candidates.nth(index)
+
+                try:
+                    if candidate.evaluate(
+                        "(element) => element === arguments[0]",
+                        pin_field,
+                    ):
+                        continue
+                except Exception:
+                    pass
+
+                return candidate
+
+        inputs = self.page.locator(
+            "input:visible:not([type='hidden'])"
+        )
+
+        for index in range(inputs.count()):
+            candidate = inputs.nth(index)
+
+            description = self._input_description(candidate)
+
+            if "password" in description:
+                continue
+
+            try:
+                same_element = candidate.evaluate(
+                    "(element, other) => element === other",
+                    pin_field,
+                )
+
+                if same_element:
+                    continue
+            except Exception:
+                pass
+
+            if "name" in description or "device" in description:
+                return candidate
+
+        # Last fallback: another visible editable input.
+        for index in range(inputs.count()):
+            candidate = inputs.nth(index)
+
+            try:
+                same_element = candidate.evaluate(
+                    "(element, other) => element === other",
+                    pin_field,
+                )
+
+                if same_element:
+                    continue
+
+                input_type = (
+                    candidate.get_attribute("type") or "text"
+                ).lower()
+
+                if input_type in (
+                    "text",
+                    "search",
+                    "tel",
+                    "number",
+                    "email",
+                ):
+                    return candidate
+
+            except Exception:
+                continue
+
+        return None
+
+    def _find_submit_button(self):
+        # Prefer a button explicitly associated with pairing.
+        for pattern in (
+            r"pair",
+            r"submit",
+            r"connect",
+            r"confirm",
+            r"сопряж",
+            r"подтверд",
+            r"подключ",
+        ):
+            candidate = self.page.get_by_role(
+                "button",
+                name=re.compile(pattern, re.IGNORECASE),
+            )
+
+            if candidate.count() > 0:
+                for index in range(candidate.count()):
+                    button = candidate.nth(index)
+
+                    try:
+                        if button.is_visible() and button.is_enabled():
+                            return button
+                    except Exception:
+                        continue
+
+        # Fallback for pages using ordinary HTML form submission.
+        for selector in (
+            "form:visible button[type='submit']",
+            "form:visible input[type='submit']",
+            "button:visible",
+        ):
+            candidates = self.page.locator(selector)
+
+            for index in range(candidates.count()):
+                candidate = candidates.nth(index)
+
+                try:
+                    if candidate.is_visible() and candidate.is_enabled():
+                        return candidate
+                except Exception:
+                    continue
+
+        return None
+
+    def pair(self, pin, name):
+        page = self.start()
+
+        current_path = urllib.parse.urlparse(page.url).path.rstrip("/")
+
+        if current_path.lower() != "/pin":
+            print(
+                "[Browser] Returning to Sunshine /pin...",
+                flush=True,
+            )
+
+            page.goto(
+                SUNSHINE_API + "/pin",
+                wait_until="domcontentloaded",
+                timeout=45000,
+            )
+
+        if self.is_welcome():
+            raise RuntimeError(
+                "Sunshine redirected to Welcome during pairing."
+            )
+
+        print(
+            "[Browser] Preparing the actual Sunshine PIN form...",
+            flush=True,
+        )
+
+        pin_field = self._find_pin_field()
+
+        if pin_field is None:
+            raise RuntimeError(
+                "Could not find a visible PIN input on Sunshine /pin. "
+                "Inspect the page's HTML and input selectors."
+            )
+
+        name_field = self._find_name_field(pin_field)
+
+        if name_field is None:
+            raise RuntimeError(
+                "Could not find a visible device-name input on Sunshine /pin. "
+                "The current page may not contain a name field."
+            )
+
+        submit_button = self._find_submit_button()
+
+        if submit_button is None:
+            raise RuntimeError(
+                "Could not find an enabled pairing submit button on /pin."
+            )
+
+        pin_field.fill(pin)
+        name_field.fill(name)
+
+        print(
+            "[Browser] PIN and device name filled.",
+            flush=True,
+        )
+
+        print(
+            "[Browser] Submitting the actual Sunshine page form...",
+            flush=True,
+        )
+
+        # IMPORTANT:
+        # We do not issue an HTTP POST to /api/pin ourselves.
+        # The Sunshine page submits its own form through Chromium.
+        #
+        # We observe the response generated by the page so that the
+        # panel can report the real pairing result.
+        try:
+            with page.expect_response(
+                lambda response: (
+                    urllib.parse.urlparse(response.url).path.rstrip("/").lower()
+                    == "/api/pin"
+                    and response.request.method.upper() == "POST"
+                ),
+                timeout=120000,
+            ) as response_info:
+                submit_button.click()
+
+            response = response_info.value
+            response_status = response.status
+
+            try:
+                response_content = response.text()
+            except Exception:
+                response_content = ""
+
+            print(
+                f"[Pairing] Sunshine page submission: "
+                f"HTTP {response_status}; "
+                f"response={response_content[:1000]!r}",
+                flush=True,
+            )
+
+            result = SunshineClient.parse_json(response_content)
+
+            # Keep Chromium on the PIN page after the operation.
+            try:
+                current_path = (
+                    urllib.parse.urlparse(page.url).path.rstrip("/").lower()
+                )
+
+                if current_path != "/pin":
+                    page.goto(
+                        SUNSHINE_API + "/pin",
+                        wait_until="domcontentloaded",
+                        timeout=45000,
+                    )
+            except Exception as navigation_error:
+                print(
+                    f"[Browser] Could not restore /pin: {navigation_error}",
+                    flush=True,
+                )
+
+            if response_status == 200 and result.get("status") is True:
+                print(
+                    "[Pairing] Sunshine confirmed pairing successfully.",
+                    flush=True,
+                )
+
+                return True, "Сопряжение подтверждено Sunshine."
+
+            return False, (
+                f"Sunshine вернул HTTP {response_status}. "
+                "Проверь PIN, состояние Moonlight и логи Actions."
+            )
+
+        except Exception as error:
+            print(
+                f"[Pairing] Browser form submission failed: {error}",
+                flush=True,
+            )
+
+            # Preserve the persistent PIN page if possible.
+            try:
+                current_path = (
+                    urllib.parse.urlparse(page.url).path.rstrip("/").lower()
+                )
+
+                if current_path != "/pin":
+                    page.goto(
+                        SUNSHINE_API + "/pin",
+                        wait_until="domcontentloaded",
+                        timeout=45000,
+                    )
+            except Exception:
+                pass
+
+            return False, (
+                "Не удалось получить подтверждение от формы Sunshine. "
+                "Проверь селекторы страницы /pin и логи Chromium."
+            )
 
     def close(self):
         if self.context is not None:
@@ -612,10 +963,11 @@ class SunshineClient:
         return status, url, content
 
     # --------------------------------------------------------
-    # Pairing
+    # Pairing through the actual browser page
     # --------------------------------------------------------
 
     def pair(self, pin, name):
+        # Verify that Sunshine is still reachable.
         status, url, _ = self.refresh_pin_page()
         final_path = urllib.parse.urlparse(url).path.rstrip("/").lower()
 
@@ -625,36 +977,20 @@ class SunshineClient:
                 "Проверь логи первоначальной настройки."
             )
 
-        # The existing API payload remains PIN + device name only.
-        status, url, content = self.request(
-            "/api/pin",
-            method="POST",
-            data={
-                "pin": pin,
-                "name": name,
-            },
-            auth=True,
-            timeout=120,
-        )
+        # Pair through the existing, authenticated Chromium page.
+        # No direct Python POST to /api/pin is performed.
+        try:
+            return SUNSHINE_BROWSER.pair(pin, name)
+        except Exception as error:
+            print(
+                f"[Pairing] Browser pairing error: {error}",
+                flush=True,
+            )
 
-        print(
-            f"[Pairing] POST /api/pin: HTTP {status}; "
-            f"URL={url}; response={content[:1000]!r}",
-            flush=True,
-        )
-
-        result = self.parse_json(content)
-
-        if status == 200 and result.get("status") is True:
-            self.refresh_pin_page()
-            return True, "Сопряжение подтверждено Sunshine."
-
-        self.refresh_pin_page()
-
-        return False, (
-            f"Sunshine вернул HTTP {status}. "
-            "Проверь PIN, состояние Moonlight и логи Actions."
-        )
+            return False, (
+                "Ошибка выполнения формы Sunshine. "
+                "Подробности находятся в логах сервера."
+            )
 
 
 SUNSHINE = SunshineClient()
