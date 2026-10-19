@@ -36,7 +36,7 @@ jobs:
             chrome_options.add_argument("--headless=new")  # Надежный headless-режим
             chrome_options.add_argument("--no-sandbox")
             chrome_options.add_argument("--disable-dev-shm-usage")
-            chrome_options.add_argument("--window-size=15360,8640")
+            chrome_options.add_argument("--window-size=12288,6480")
 
             driver = webdriver.Chrome(options=chrome_options)
 
