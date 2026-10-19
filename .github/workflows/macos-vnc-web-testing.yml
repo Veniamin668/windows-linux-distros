@@ -1,0 +1,162 @@
+name: MACOSOS VNC WEB Testing
+
+on:
+  workflow_dispatch:
+    inputs:
+      username:
+        description: 'name custom user'
+        required: true
+        default: 'ktoya'
+        type: string
+      use_secrets:
+        description: 'Использовать секреты из GitHub Secrets (true/false)'
+        required: true
+        default: true
+        type: boolean
+      create_user:
+        description: 'Создавать кастомного пользователя через dscl (true/false)'
+        required: true
+        default: true
+        type: boolean
+
+jobs:
+  build-cloud-pc-mac:
+    runs-on: macos-26-intel
+    timeout-minutes: 420
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: 1. Connect Tailscale (Official Action)
+        uses: tailscale/github-action@v4
+        with:
+#          authkey: ${{ secrets.TAIL_KEY }}
+          oauth-client-id: ${{ secrets.TAIL_OAUTH_CLIENT_ID  }}
+          oauth-secret: ${{ secrets.TAIL_OAUTH }}
+          tags: tag:ci
+          hostname: runner-macosos
+          args: '--advertise-exit-node --ssh'
+          version: 'latest'
+
+      - name: 2. Setup Users, SSH & Environment
+        env:
+          CREATE_USER: ${{ github.event.inputs.create_user }}
+          USE_SECRETS: ${{ github.event.inputs.use_secrets }}
+          CUSTOM_USER: ${{ github.event.inputs.username }}
+          SECRET_PASS: ${{ secrets.CUSTOM_PASSWORD }}
+          MANUAL_PASS: ${{ secrets.ADMIN_PASS }}
+        run: |
+          # Жестко меняем хостнейм в самой macOS, чтобы система тоже знала своё имя
+          sudo scutil --set ComputerName "runner-macosos"
+          sudo scutil --set HostName "runner-macosos"
+          sudo scutil --set LocalHostName "runner-macosos"
+          dscacheutil -flushcache
+          sudo hostname "runner-macosos"
+
+          # fix network
+          #sudo networksetup -setdnsservers Wi-Fi 8.8.8.8 1.1.1.1 || true
+          sudo networksetup -setdnsservers Ethernet 8.8.8.8 1.1.1.1 || true
+          yes | brew install fastfetch > /dev/null 2>&1
+          fastfetch
+          if [ "$CREATE_USER" = "false" ]; then
+              echo "Создание кастомного пользователя отключено (create_user: false). Пропускаем шаг."
+              exit 0
+          fi
+
+          echo "Настраиваем пользователя $CUSTOM_USER и окружение..."
+          if [ "$USE_SECRETS" = "true" ]; then
+              ACTIVE_PASS="$SECRET_PASS"
+              echo "Используем пароль из GitHub Secrets (CUSTOM_PASSWORD)."
+          else
+              ACTIVE_PASS="$MANUAL_PASS"
+              echo "Используем пароль из ручного инпута."
+          fi
+
+          if ! id "$CUSTOM_USER" &>/dev/null; then
+              sudo dscl . -create /Users/$CUSTOM_USER
+              sudo dscl . -create /Users/$CUSTOM_USER UserShell /bin/zsh
+              sudo dscl . -create /Users/$CUSTOM_USER RealName "$CUSTOM_USER"
+              sudo dscl . -create /Users/$CUSTOM_USER UniqueID 502
+              sudo dscl . -create /Users/$CUSTOM_USER PrimaryGroupID 20
+              sudo dscl . -create /Users/$CUSTOM_USER NFSHomeDirectory /Users/$CUSTOM_USER
+              sudo mkdir -p /Users/$CUSTOM_USER
+              sudo chown -R $CUSTOM_USER:staff /Users/$CUSTOM_USER
+              echo "Пользователь $CUSTOM_USER создан через dscl."
+          else
+              echo "Пользователь $CUSTOM_USER уже существует."
+          fi
+
+          echo "$ACTIVE_PASS" | sudo dscl . -passwd /Users/$CUSTOM_USER
+          sudo dseditgroup -o edit -a "$CUSTOM_USER" -t user admin || true
+
+          echo "Проверяем статус SSH..."
+          sudo launchctl list | grep sshd || true
+
+      - name: 2.1. Integrate BetterDisplay & Magic MJPEG Streamer
+        run: |
+          echo "======================================================================"
+          echo "     DEPLOYING VIRTUAL DISPLAY & FAST MJPEG STREAMER WITH AUTO-TCC    "
+          echo "======================================================================"
+          
+          # 1. Ставим необходимые пакеты через Homebrew
+          echo " >> Installing BetterDisplay and cliclick..."
+          brew install --cask betterdisplay
+          brew install cliclick
+          hash -r
+
+          # Автоопределение путей cliclick и BetterDisplay в зависимости от платформы (Intel/ARM)
+          if [ -f "/opt/homebrew/bin/cliclick" ]; then
+            CLICLICK_PATH="/opt/homebrew/bin/cliclick"
+          else
+            CLICLICK_PATH="/usr/local/bin/cliclick"
+          fi
+          
+          BD_APP="/Applications/BetterDisplay.app/Contents/MacOS/BetterDisplay"
+
+          # 2. Полная точечная превентивная зачистка процессов и порта 5901
+          echo " >> Cleaning up old ghost processes and port 5901..."
+          sudo kill -9 $(sudo lsof -t -i:5901) 2>/dev/null || true
+          sudo pkill -9 -f BetterDisplay 2>/dev/null || true
+          sudo pkill -9 -f stream.py 2>/dev/null || true
+
+          # 3. Чистый фоновый запуск BetterDisplay напрямую
+          echo " >> Launching BetterDisplay driver in background..."
+          sudo launchctl asuser 501 "$BD_APP" &
+          
+          # Даем драйверу 5 секунд на создание внутренних сокетов
+          sleep 5
+
+          # 4. Создаем виртуальный FULL HD монитор (1920x1080)
+          echo " >> Activating virtual 1920x1080 frame buffer via CLI..."
+          sudo launchctl asuser 501 "$BD_APP" cli vcreate 1920 1080 || true
+
+          # 5. Конфигурируем профильные алиасы для супер-быстрого ручного управления по SSH
+          echo " >> Injecting fast 'mac' command alias..."
+          echo "alias mac='sudo launchctl asuser 501 $CLICLICK_PATH'" >> ~/.bash_profile
+          echo "alias mac='sudo launchctl asuser 501 $CLICLICK_PATH'" >> ~/.zshrc
+
+          # 6. Запускаем готовый MJPEG-стример из корня репозитория (файл подтянулся после checkout)
+          echo " >> Starting Python streaming backend from repository root..."
+          sudo launchctl asuser 501 python3 ./stream.py &
+          
+          # Ждем 4 секунды, пока macOS зафиксирует попытку захвата и выведет окно безопасности TCC
+          echo " >> Waiting for Apple TCC confirmation window to spawn..."
+          sleep 4
+
+          # 7. АВТО-ПРОЖИМ: Стреляем из кликера точно по кнопке "Allow" на виртуальном 1080p мониторе
+          echo " >> Bypassing Apple Security! Auto-clicking the 'Allow' button..."
+          sudo launchctl asuser 501 "$CLICLICK_PATH" c:960,670
+          sleep 0.5
+          sudo launchctl asuser 501 "$CLICLICK_PATH" c:960,685
+          
+          echo "======================================================================"
+          echo " SUCCESSFULLY INITIALIZED! Open http://<YOUR_TAILSCALE_IP>:5901 in your browser."
+          echo "======================================================================"
+
+      - name: 3. Wait session (7 hours)
+        run: |
+          echo "Всё поднято, держим сессию..."
+          while true; do
+            sleep 60
+          done
