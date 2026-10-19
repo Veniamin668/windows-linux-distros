@@ -1,101 +1,71 @@
 import http.server
 import socketserver
-import os
-import time
+import subprocess
+import json
 import sys
-import urllib.parse
 
-PORT = 5901
-tmp_file = '/tmp/live.jpg'
+PORT = 5902
 
-# Автоопределение пути к cliclick на macOS
-if os.path.exists("/opt/homebrew/bin/cliclick"):
-    CLICLICK = "/opt/homebrew/bin/cliclick"
-else:
-    CLICLICK = "/usr/local/bin/cliclick"
-
-class KVMHandler(http.server.BaseHTTPRequestHandler):
+class SunshinePairingHandler(http.server.BaseHTTPRequestHandler):
     def do_GET(self):
-        # Обработка кликов из браузера
-        if self.path.startswith('/click?'):
-            parsed = urllib.parse.urlparse(self.path)
-            params = urllib.parse.parse_qs(parsed.query)
-            if 'x' in params and 'y' in params:
-                x = params['x'][0]
-                y = params['y'][0]
-                # Выполняем клик в графической сессии пользователя 501
-                os.system(f'sudo launchctl asuser 501 {CLICLICK} c:{x},{y}')
+        # Ожидаем запрос вида /XXXX, где XXXX - это 4 цифры ПИН-кода из Moonlight
+        pin_code = self.path.strip('/')
+        
+        if pin_code.isdigit() and len(pin_code) == 4:
+            print(f"[!] Перехвачен ПИН-код из браузера: {pin_code}. Отправляем в Sunshine...")
             
-            self.send_response(200)
-            self.end_headers()
-            return
-
-        # Главная страница с плеером и JS-обработчиком кликов
-        if self.path == '/':
-            self.send_response(200)
-            self.send_header('Content-type', 'text/html; charset=utf-8')
-            self.end_headers()
-            html = """
-            <html>
-            <head>
-                <title>Mac Cloud PC - Web KVM</title>
-                <style>
-                    body { background:#111; margin:0; display:flex; justify-content:center; align-items:center; height:100vh; overflow:hidden; font-family:sans-serif; }
-                    .container { position: relative; max-width:100%; max-height:100vh; }
-                    img { display: block; max-width:100%; max-height:100vh; object-fit:contain; cursor: crosshair; }
-                </style>
-            </head>
-            <body>
-                <div class="container">
-                    <img id="screen" src="/stream.mjpeg" draggable="false"/>
-                </div>
-                <script>
-                    const img = document.getElementById('screen');
-                    
-                    img.addEventListener('click', function(e) {
-                        // Получаем реальные размеры картинки, как она отображается в браузере
-                        const rect = img.getBoundingClientRect();
-                        
-                        # Вычисляем относительные координаты клика (от 0 до 1)
-                        const relX = (e.clientX - rect.left) / rect.width;
-                        const relY = (e.clientY - rect.top) / rect.height;
-                        
-                        # Переводим в жесткое разрешение нашего виртуального экрана BetterDisplay (1920x1080)
-                        const macX = Math.round(relX * 1920);
-                        const macY = Math.round(relY * 1080);
-                        
-                        # Отправляем фоновый запрос на клик без перезагрузки страницы
-                        fetch(`/click?x=${macX}&y=${macY}`);
-                    });
-                </script>
-            </body>
-            </html>
-            """
-            self.wfile.write(html.encode('utf-8'))
+            # Формируем локальный POST-запрос к API Sunshine через встроенный curl.
+            # Флаг -k нужен, так как Sunshine при старте генерирует самоподписанный SSL-сертификат.
+            curl_cmd = [
+                "curl", "-k", "-X", "POST", 
+                "-H", "Content-Type: application/json",
+                "-d", json.dumps({"pin": pin_code}),
+                "https://localhost:47990/api/pin"
+            ]
             
-        elif self.path.startswith('/stream.mjpeg'):
-            self.send_response(200)
-            self.send_header('Content-type', 'multipart/x-mixed-replace; boundary=--jpgboundary')
-            self.end_headers()
-            while True:
-                try:
-                    os.system(f'screencapture -x -t jpg {tmp_file} >/dev/null 2>&1')
-                    with open(tmp_file, 'rb') as f:
-                        img_data = f.read()
-                    self.wfile.write(b'--jpgboundary\(\r\\)n')
-                    self.send_header('Content-type', 'image/jpeg')
-                    self.send_header('Content-length', str(len(img_data)))
-                    self.end_headers()
-                    self.wfile.write(img_data)
-                    self.wfile.write(b\('\r\\)n')
-                    time.sleep(0.1)
-                except Exception:
-                    break
-        else:
-            self.send_error(404)
+            try:
+                subprocess.check_output(curl_cmd, stderr=subprocess.DEVNULL)
+                
+                self.send_response(200)
+                self.send_header('Content-type', 'text/html; charset=utf-8')
+                self.end_headers()
+                
+                response_html = f"""
+                <html>
+                <body style="background:#111; color:#00ff00; font-family:sans-serif; text-align:center; padding-top:50px;">
+                    <h1 style="font-size: 40px; margin-bottom: 10px;">УСПЕШНО СВЯЗАНО! 🚀</h1>
+                    <p style="color:#aaa; font-size: 18px;">ПИН-код <b>{pin_code}</b> успешно отправлен и принят сервером Sunshine.</p>
+                    <p style="color:#888;">Возвращайся в Moonlight на Windows — твой облачный Mac готов к стримингу!</p>
+                </body>
+                </html>
+                """
+                self.wfile.write(response_html.encode('utf-8'))
+                return
+            except Exception as e:
+                self.send_response(500)
+                self.send_header('Content-type', 'text/plain; charset=utf-8')
+                self.end_headers()
+                self.wfile.write(f"Ошибка отправки запроса в Sunshine API: {str(e)}".encode('utf-8'))
+                return
+        
+        # Если зашли просто на главную страницу порта 5902 без ПИН-кода
+        self.send_response(200)
+        self.send_header('Content-type', 'text/html; charset=utf-8')
+        self.end_headers()
+        html = """
+        <html>
+        <body style="background:#111; color:#fff; font-family:sans-serif; text-align:center; padding-top:100px;">
+            <h1 style="font-size: 36px; margin-bottom: 20px;">Система Авто-Ввода ПИН Sunshine 🌌</h1>
+            <p style="color:#aaa; font-size: 18px;">Чтобы привязать Moonlight, введи полученный 4-значный ПИН прямо в адресную строку браузера.</p>
+            <p style="font-size:24px; color:#007bff; margin-top: 30px;">Пример: <b>http://runner-macosos:5902/1234</b></p>
+        </body>
+        </html>
+        """
+        self.wfile.write(html.encode('utf-8'))
 
 socketserver.TCPServer.allow_reuse_address = True
-with socketserver.TCPServer(("", PORT), KVMHandler) as httpd:
+with socketserver.TCPServer(("", PORT), SunshinePairingHandler) as httpd:
+    print(f"[+] Сервер авто-ввода ПИН успешно запущен на порту {PORT}")
     try:
         httpd.serve_forever()
     except KeyboardInterrupt:
