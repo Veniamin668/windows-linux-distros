@@ -94,7 +94,6 @@ jobs:
           sudo launchctl list | grep sshd || true
       
       - name: Install Playwright
-        shell: zsh
         run: |
             python3 -m pip install --break-system-packages playwright
             python3 -m playwright install chromium
