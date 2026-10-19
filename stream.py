@@ -1,19 +1,20 @@
-
+import atexit
+import base64
+import http.cookiejar
 import http.server
+import hmac
 import json
 import os
 import re
-import ssl
 import socketserver
+import ssl
+import threading
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
-import http.cookiejar
-import base64
-import hmac
-import time
-import threading
-from html.parser import HTMLParser
+
+from playwright.sync_api import sync_playwright
 
 
 # ============================================================
@@ -24,7 +25,8 @@ HOST = os.environ.get("PAIR_HOST", "0.0.0.0")
 PORT = int(os.environ.get("PAIR_PORT", "5902"))
 
 SUNSHINE_API = os.environ.get(
-    "SUNSHINE_API", "https://127.0.0.1:47990"
+    "SUNSHINE_API",
+    "https://127.0.0.1:47990",
 ).rstrip("/")
 
 SUNSHINE_USER = os.environ.get("SUNSHINE_USER", "")
@@ -134,7 +136,251 @@ form.addEventListener('submit', async (event) => {
 
 
 # ============================================================
-# SUNSHINE CLIENT
+# HIDDEN SUNSHINE BROWSER
+# ============================================================
+
+class SunshineBrowser:
+    def __init__(self):
+        self.playwright = None
+        self.browser = None
+        self.context = None
+        self.page = None
+
+    def start(self):
+        if self.browser is not None and self.page is not None:
+            if not self.browser.is_connected():
+                self.close()
+            else:
+                return self.page
+
+        print("[Browser] Starting headless Chromium...", flush=True)
+
+        self.playwright = sync_playwright().start()
+
+        try:
+            self.browser = self.playwright.chromium.launch(
+                headless=True,
+            )
+
+            self.context = self.browser.new_context(
+                ignore_https_errors=True,
+                http_credentials={
+                    "username": SUNSHINE_USER,
+                    "password": SUNSHINE_PASSWORD,
+                },
+            )
+
+            self.page = self.context.new_page()
+            self.page.set_default_timeout(15000)
+
+            print(
+                "[Browser] Opening Sunshine...",
+                flush=True,
+            )
+
+            self.page.goto(
+                SUNSHINE_API + "/",
+                wait_until="domcontentloaded",
+                timeout=45000,
+            )
+
+            print(
+                f"[Browser] Initial URL: {self.page.url}",
+                flush=True,
+            )
+
+            if self.is_welcome():
+                self.configure_welcome()
+
+            print("[Browser] Opening PIN page...", flush=True)
+
+            self.page.goto(
+                SUNSHINE_API + "/pin",
+                wait_until="domcontentloaded",
+                timeout=45000,
+            )
+
+            print(
+                f"[Browser] PIN page URL: {self.page.url}",
+                flush=True,
+            )
+
+            if self.is_welcome():
+                raise RuntimeError(
+                    "Sunshine redirected to /welcome after setup."
+                )
+
+            print(
+                "[Browser] PIN page opened. Chromium remains running.",
+                flush=True,
+            )
+
+            return self.page
+
+        except Exception:
+            self.close()
+            raise
+
+    def is_welcome(self):
+        if self.page is None:
+            return False
+
+        try:
+            path = urllib.parse.urlparse(self.page.url).path
+            return path.rstrip("/").lower() == "/welcome"
+        except Exception:
+            return False
+
+    def configure_welcome(self):
+        print(
+            "[Browser] Welcome detected. Filling administrator form...",
+            flush=True,
+        )
+
+        self.page.locator("input:visible").first.wait_for(
+            state="visible",
+            timeout=30000,
+        )
+
+        visible_inputs = self.page.locator("input:visible")
+        password_inputs = self.page.locator(
+            "input[type='password']:visible"
+        )
+
+        password_count = password_inputs.count()
+
+        if password_count < 2:
+            raise RuntimeError(
+                "Welcome form must contain two visible password fields; "
+                f"found {password_count}."
+            )
+
+        username_field = None
+
+        for selector in (
+            "input[name='username']:visible",
+            "input[name='user']:visible",
+            "input[autocomplete='username']:visible",
+            "input[type='text']:visible",
+            "input[type='email']:visible",
+        ):
+            candidate = self.page.locator(selector)
+
+            if candidate.count() > 0:
+                username_field = candidate.first
+                break
+
+        if username_field is None:
+            for index in range(visible_inputs.count()):
+                candidate = visible_inputs.nth(index)
+                input_type = (
+                    candidate.get_attribute("type") or "text"
+                ).lower()
+
+                if input_type not in (
+                    "password",
+                    "submit",
+                    "button",
+                    "hidden",
+                    "checkbox",
+                    "radio",
+                ):
+                    username_field = candidate
+                    break
+
+        if username_field is None:
+            raise RuntimeError(
+                "Could not find the Welcome username field."
+            )
+
+        username_field.fill(SUNSHINE_USER)
+        password_inputs.nth(0).fill(SUNSHINE_PASSWORD)
+        password_inputs.nth(1).fill(SUNSHINE_PASSWORD)
+
+        print(
+            "[Browser] Username and both password fields filled.",
+            flush=True,
+        )
+
+        # The Sunshine Welcome button is named "Login".
+        login_button = self.page.get_by_role(
+            "button",
+            name="Login",
+            exact=True,
+        )
+
+        if login_button.count() == 0:
+            # Fallback for a button whose accessible role/name differs.
+            login_button = self.page.locator(
+                "button:visible, input[type='submit']:visible"
+            ).filter(
+                has_text=re.compile(r"^\s*Login\s*$", re.IGNORECASE)
+            )
+
+        if login_button.count() == 0:
+            # Some HTML forms use an input button with a value instead
+            # of a text-bearing button.
+            login_button = self.page.locator(
+                "input[type='button']:visible"
+            ).filter(
+                has=self.page.locator("text=Login")
+            )
+
+        if login_button.count() == 0:
+            raise RuntimeError(
+                "Sunshine Welcome Login button was not found."
+            )
+
+        login_button.first.click()
+
+        try:
+            self.page.wait_for_load_state(
+                "domcontentloaded",
+                timeout=15000,
+            )
+        except Exception:
+            # Single-page applications may not trigger navigation.
+            pass
+
+        self.page.wait_for_timeout(2000)
+
+        print(
+            f"[Browser] After Login click: {self.page.url}",
+            flush=True,
+        )
+
+    def close(self):
+        if self.context is not None:
+            try:
+                self.context.close()
+            except Exception:
+                pass
+            self.context = None
+
+        if self.browser is not None:
+            try:
+                self.browser.close()
+            except Exception:
+                pass
+            self.browser = None
+
+        if self.playwright is not None:
+            try:
+                self.playwright.stop()
+            except Exception:
+                pass
+            self.playwright = None
+
+        self.page = None
+        print("[Browser] Chromium stopped.", flush=True)
+
+
+SUNSHINE_BROWSER = SunshineBrowser()
+atexit.register(SUNSHINE_BROWSER.close)
+
+
+# ============================================================
+# SUNSHINE HTTP CLIENT
 # ============================================================
 
 class SunshineClient:
@@ -154,10 +400,17 @@ class SunshineClient:
         encoded = base64.b64encode(
             credentials.encode("utf-8")
         ).decode("ascii")
+
         return "Basic " + encoded
 
-    def request(self, path, method="GET", data=None,
-                auth=True, timeout=REQUEST_TIMEOUT):
+    def request(
+        self,
+        path,
+        method="GET",
+        data=None,
+        auth=True,
+        timeout=REQUEST_TIMEOUT,
+    ):
         url = SUNSHINE_API + path
 
         headers = {
@@ -182,9 +435,13 @@ class SunshineClient:
         )
 
         try:
-            with self.opener.open(request, timeout=timeout) as response:
+            with self.opener.open(
+                request,
+                timeout=timeout,
+            ) as response:
                 content = response.read().decode(
-                    "utf-8", errors="replace"
+                    "utf-8",
+                    errors="replace",
                 )
 
                 return (
@@ -195,29 +452,30 @@ class SunshineClient:
 
         except urllib.error.HTTPError as error:
             content = error.read().decode(
-                "utf-8", errors="replace"
+                "utf-8",
+                errors="replace",
             )
-            location = error.headers.get("Location", "")
 
             print(
                 f"[Sunshine] HTTP {error.code}; "
-                f"URL={url}; "
-                f"Location={location or '(none)'}; "
+                f"URL={error.geturl()}; "
+                f"Location={error.headers.get('Location', '(none)')}; "
                 f"response={content[:500]!r}",
                 flush=True,
             )
 
             return (
                 error.code,
-                location or url,
+                error.geturl(),
                 content,
             )
 
         except Exception as error:
             print(
-                f"[Sunshine] Request failed: {error}",
+                f"[Sunshine] Request failed for {url}: {error}",
                 flush=True,
             )
+
             return 0, url, str(error)
 
     @staticmethod
@@ -229,7 +487,7 @@ class SunshineClient:
             return {}
 
     # --------------------------------------------------------
-    # Initial setup and authentication
+    # Authentication
     # --------------------------------------------------------
 
     def check_auth(self):
@@ -241,241 +499,146 @@ class SunshineClient:
 
         if status != 200:
             print(
-                f"[Sunshine] Auth check failed: HTTP {status}; "
-                f"URL={url}",
+                f"[Sunshine] Auth check failed: HTTP {status}; URL={url}",
                 flush=True,
             )
             return False
 
         result = self.parse_json(content)
 
+        if not result and content.strip().lower().startswith(
+            ("<!doctype html", "<html")
+        ):
+            print(
+                "[Sunshine] API returned HTML instead of JSON.",
+                flush=True,
+            )
+            return False
+
         if result.get("status") is False:
-            return False
-
-        print("[Sunshine] Admin authentication successful.", flush=True)
-        return True
-
-    def ensure_setup(self):
-        if not SUNSHINE_USER or not SUNSHINE_PASSWORD:
             print(
-                "[Sunshine] SUNSHINE_USER or SUNSHINE_PASSWORD "
-                "is missing.",
-                flush=True,
-            )
-            return False
-
-        # Existing Sunshine instance: just authenticate.
-        if self.check_auth():
-            return True
-
-        # Detect first-run Welcome page.
-        status, url, content = self.request(
-            "/welcome",
-            method="GET",
-            auth=False,
-        )
-
-        if status == 200 and "/welcome" in url.lower():
-            print(
-                "[Sunshine] Fresh instance detected. "
-                "Creating the initial administrator...",
-                flush=True,
-            )
-
-            setup_status, setup_url, setup_content = self.request(
-                "/api/password",
-                method="POST",
-                auth=False,
-                data={
-                    "newUsername": SUNSHINE_USER,
-                    "newPassword": SUNSHINE_PASSWORD,
-                    "confirmNewPassword": SUNSHINE_PASSWORD,
-                },
-            )
-
-            print(
-                f"[Sunshine] Setup response: HTTP {setup_status}; "
-                f"URL={setup_url}; "
-                f"body={setup_content[:700]!r}",
-                flush=True,
-            )
-
-            # Verify using an authenticated API request.
-            if self.check_auth():
-                print(
-                    "[Sunshine] Initial setup completed successfully.",
-                    flush=True,
-                )
-                return True
-
-            print(
-                "[Sunshine] Initial setup did not authenticate. "
-                "Check the setup response above.",
+                "[Sunshine] API reported authentication failure.",
                 flush=True,
             )
             return False
 
         print(
-            f"[Sunshine] Could not authenticate or identify "
-            f"the Welcome page. HTTP {status}; URL={url}",
+            "[Sunshine] Admin API responded successfully.",
             flush=True,
         )
-        return False
+        return True
 
     # --------------------------------------------------------
-    # Refresh Sunshine pairing page
+    # Initial setup
+    # --------------------------------------------------------
+
+    def ensure_setup(self):
+        if not SUNSHINE_USER or not SUNSHINE_PASSWORD:
+            print(
+                "[Sunshine] SUNSHINE_USER or SUNSHINE_PASSWORD is missing.",
+                flush=True,
+            )
+            return False
+
+        try:
+            page = SUNSHINE_BROWSER.start()
+
+            if page is None or SUNSHINE_BROWSER.is_welcome():
+                print(
+                    "[Sunshine] Browser is still on Welcome.",
+                    flush=True,
+                )
+                return False
+
+        except Exception as error:
+            print(
+                f"[Sunshine] Browser initialization failed: {error}",
+                flush=True,
+            )
+            return False
+
+        if not self.check_auth():
+            print(
+                "[Sunshine] Admin API authentication check failed.",
+                flush=True,
+            )
+            return False
+
+        status, url, _ = self.request(
+            "/pin",
+            method="GET",
+            auth=True,
+        )
+
+        final_path = urllib.parse.urlparse(url).path.rstrip("/").lower()
+
+        if status != 200 or final_path == "/welcome":
+            print(
+                f"[Sunshine] PIN page check failed: HTTP {status}; URL={url}",
+                flush=True,
+            )
+            return False
+
+        print(
+            "[Sunshine] Setup/authentication completed successfully.",
+            flush=True,
+        )
+        return True
+
+    # --------------------------------------------------------
+    # Refresh PIN page
     # --------------------------------------------------------
 
     def refresh_pin_page(self):
-        """HTTP-equivalent of reopening Sunshine's /pin page."""
-        status, url, content = self.request("/pin")
+        status, url, content = self.request(
+            "/pin",
+            method="GET",
+            auth=True,
+        )
 
-        if status == 200 and "/welcome" not in url.lower():
+        final_path = urllib.parse.urlparse(url).path.rstrip("/").lower()
+
+        if status == 200 and final_path != "/welcome":
             print(
                 f"[Sunshine] /pin refreshed: {url}",
                 flush=True,
             )
         else:
             print(
-                f"[Sunshine] /pin refresh: HTTP {status}; "
-                f"URL={url}",
+                f"[Sunshine] /pin refresh failed: HTTP {status}; URL={url}",
                 flush=True,
             )
 
         return status, url, content
 
     # --------------------------------------------------------
-    # Detect an internally generated pairing ID, if supported
-    # --------------------------------------------------------
-
-    def get_pending_pairings(self):
-        status, url, content = self.request(
-            "/api/pin",
-            method="GET",
-        )
-
-        print(
-            f"[Sunshine] Pending pairing lookup: "
-            f"HTTP {status}; URL={url}; "
-            f"response={content[:700]!r}",
-            flush=True,
-        )
-
-        if status != 200:
-            return None
-
-        result = self.parse_json(content)
-
-        # Recognize list fields only when the API actually returns
-        # a list. If the endpoint is unsupported or returns HTML,
-        # return None so the legacy API can be tried.
-        for field in ("pairings", "pending", "requests"):
-            if field in result and isinstance(result[field], list):
-                return result[field]
-
-        # Some API variants may return a single pending request.
-        if any(key in result for key in ("pairing_id", "pairingId")):
-            return [result]
-
-        return None
-
-    @staticmethod
-    def extract_pairing_id(item):
-        if not isinstance(item, dict):
-            return None
-
-        for field in ("pairing_id", "pairingId", "id"):
-            value = item.get(field)
-
-            if isinstance(value, (str, int)) and str(value).strip():
-                return str(value).strip()
-
-        return None
-
-    # --------------------------------------------------------
     # Pairing
     # --------------------------------------------------------
 
     def pair(self, pin, name):
-        # Refresh the Sunshine page first, preserving the cookie jar.
-        self.refresh_pin_page()
+        status, url, _ = self.refresh_pin_page()
+        final_path = urllib.parse.urlparse(url).path.rstrip("/").lower()
 
-        pending = self.get_pending_pairings()
+        if status != 200 or final_path == "/welcome":
+            return False, (
+                "Sunshine недоступен на PIN-странице. "
+                "Проверь логи первоначальной настройки."
+            )
 
-        if pending is not None:
-            if len(pending) == 0:
-                print(
-                    "[Pairing] No pending pairing entries found. "
-                    "Trying the legacy API.",
-                    flush=True,
-                )
-            elif len(pending) == 1:
-                pairing_id = self.extract_pairing_id(pending[0])
-
-                if pairing_id is not None:
-                    print(
-                        "[Pairing] Sunshine generated a pairing ID; "
-                        "using it automatically.",
-                        flush=True,
-                    )
-
-                    status, url, content = self.request(
-                        "/api/pin",
-                        method="POST",
-                        data={
-                            "pairing_id": pairing_id,
-                            "pin": pin,
-                            "name": name,
-                        },
-                        timeout=120,
-                    )
-
-                    print(
-                        f"[Pairing] New API: HTTP {status}; "
-                        f"URL={url}; response={content[:1000]!r}",
-                        flush=True,
-                    )
-
-                    result = self.parse_json(content)
-
-                    if status == 200 and result.get("status") is True:
-                        self.refresh_pin_page()
-                        return True, "Сопряжение подтверждено Sunshine."
-
-                    self.refresh_pin_page()
-                    return False, (
-                        f"Sunshine не подтвердил сопряжение "
-                        f"(HTTP {status}). Проверь PIN и логи Actions."
-                    )
-
-                print(
-                    "[Pairing] Pending list has no recognized ID field; "
-                    "trying the legacy API.",
-                    flush=True,
-                )
-
-            else:
-                print(
-                    f"[Pairing] Found {len(pending)} pending requests. "
-                    "Refusing to choose one randomly.",
-                    flush=True,
-                )
-                self.refresh_pin_page()
-                return False, (
-                    "Sunshine ожидает несколько запросов. "
-                    "Оставь один клиент Moonlight на экране PIN."
-                )
-
-        # Legacy API: PIN and device name only.
+        # The existing API payload remains PIN + device name only.
         status, url, content = self.request(
             "/api/pin",
             method="POST",
-            data={"pin": pin, "name": name},
+            data={
+                "pin": pin,
+                "name": name,
+            },
+            auth=True,
             timeout=120,
         )
 
         print(
-            f"[Pairing] Legacy API: HTTP {status}; "
+            f"[Pairing] POST /api/pin: HTTP {status}; "
             f"URL={url}; response={content[:1000]!r}",
             flush=True,
         )
@@ -490,8 +653,7 @@ class SunshineClient:
 
         return False, (
             f"Sunshine вернул HTTP {status}. "
-            "Посмотри логи Actions: там указан URL редиректа "
-            "и ответ API."
+            "Проверь PIN, состояние Moonlight и логи Actions."
         )
 
 
@@ -507,12 +669,14 @@ class PairHandler(http.server.BaseHTTPRequestHandler):
 
     def send_json(self, status, payload):
         body = json.dumps(
-            payload, ensure_ascii=False
+            payload,
+            ensure_ascii=False,
         ).encode("utf-8")
 
         self.send_response(status)
         self.send_header(
-            "Content-Type", "application/json; charset=utf-8"
+            "Content-Type",
+            "application/json; charset=utf-8",
         )
         self.send_header("Content-Length", str(len(body)))
         self.send_header("Cache-Control", "no-store")
@@ -534,14 +698,13 @@ class PairHandler(http.server.BaseHTTPRequestHandler):
             self.send_error(404)
             return
 
-        # The browser sends the panel token in the POST header.
-        # Do not create a form field for it.
         page = PAGE.replace("__PANEL_TOKEN__", WEB_TOKEN)
         body = page.encode("utf-8")
 
         self.send_response(200)
         self.send_header(
-            "Content-Type", "text/html; charset=utf-8"
+            "Content-Type",
+            "text/html; charset=utf-8",
         )
         self.send_header("Content-Length", str(len(body)))
         self.send_header("Cache-Control", "no-store")
@@ -659,7 +822,6 @@ def main():
         flush=True,
     )
 
-    # Wait briefly for Sunshine to start before initializing it.
     setup_ok = False
 
     for attempt in range(1, 16):
@@ -675,28 +837,35 @@ def main():
         time.sleep(POLL_INTERVAL)
 
     if not setup_ok:
+        SUNSHINE_BROWSER.close()
         raise SystemExit(
             "Sunshine initial setup/authentication failed. "
-            "See the Sunshine logs above."
+            "See the Sunshine and Browser logs above."
         )
 
-    with socketserver.ThreadingTCPServer(
-        (HOST, PORT), PairHandler
-    ) as server:
-        server.allow_reuse_address = True
-        server.daemon_threads = True
+    class PairingServer(socketserver.ThreadingTCPServer):
+        allow_reuse_address = True
+        daemon_threads = True
 
-        print(
-            f"[Panel] Listening on http://{HOST}:{PORT}/",
-            flush=True,
-        )
+    try:
+        with PairingServer((HOST, PORT), PairHandler) as server:
+            print(
+                f"[Panel] Listening on http://{HOST}:{PORT}/",
+                flush=True,
+            )
 
-        try:
+            print(
+                "[Browser] Headless Chromium remains open on Sunshine /pin.",
+                flush=True,
+            )
+
             server.serve_forever()
-        except KeyboardInterrupt:
-            print("[Panel] Shutting down.", flush=True)
-        finally:
-            server.server_close()
+
+    except KeyboardInterrupt:
+        print("[Panel] Shutting down.", flush=True)
+
+    finally:
+        SUNSHINE_BROWSER.close()
 
 
 if __name__ == "__main__":
