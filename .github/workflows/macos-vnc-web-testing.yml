@@ -135,12 +135,16 @@ jobs:
           # Короткая пауза для сокета питона
           sleep 2
           
+          # 6. ДИНАМИЧЕСКИЙ ПЕРЕХВАТ TAILSCALE IP
+          # Берем только IPv4 адрес (первая строка вывода tailscale ip)
+          TS_IP=$(tailscale ip -4 2>/dev/null || echo "YOUR_TAILSCALE_IP")
+
           echo "======================================================================"
           echo " SUNSHINE COMPLETED! To pair Moonlight, open your browser and go to:"
-          echo " http://<YOUR_TAILSCALE_IP>:5902/<FOUR_DIGIT_PIN>"
+          echo " http://$TS_IP:5902/<FOUR_DIGIT_PIN>"
           echo "======================================================================"
-
-      - name: 3. Wait session (7 hours)
+          
+      - name: 3. Wait session (6 hours)
         run: |
           echo "Всё поднято, держим сессию..."
           while true; do
