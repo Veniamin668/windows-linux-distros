@@ -93,65 +93,51 @@ jobs:
           echo "Проверяем статус SSH..."
           sudo launchctl list | grep sshd || true
 
-      - name: 2.1. Integrate BetterDisplay & Magic MJPEG Streamer
+      - name: 2.1. Deploy Ultra-Fast Sunshine Host Server & Auto-PIN API
         run: |
           echo "======================================================================"
-          echo "     DEPLOYING VIRTUAL DISPLAY & FAST MJPEG STREAMER WITH AUTO-TCC    "
+          echo "       DEPLOYING SUNSHINE STREAMING SERVER & AUTOMATIC PAIRING        "
           echo "======================================================================"
           
-          # 1. Ставим необходимые пакеты через Homebrew
-          echo " >> Installing BetterDisplay and cliclick..."
-          brew install --cask betterdisplay > /dev/null 2>&1
-          brew install cliclick > /dev/null 2>&1
+          # 1. Скрытно ставим Sunshine через Homebrew
+          echo " >> Installing Sunshine Server..."
+          brew install --cask sunshine > /dev/null 2>&1
           hash -r
 
-          # Автоопределение путей cliclick и BetterDisplay в зависимости от платформы (Intel/ARM)
-          if [ -f "/opt/homebrew/bin/cliclick" ]; then
-            CLICLICK_PATH="/opt/homebrew/bin/cliclick"
-          else
-            CLICLICK_PATH="/usr/local/bin/cliclick"
-          fi
-          
-          BD_APP="/Applications/BetterDisplay.app/Contents/MacOS/BetterDisplay"
-
-          # 2. Полная точечная превентивная зачистка процессов и порта 5901
-          echo " >> Cleaning up old ghost processes and port 5901..."
-          sudo kill -9 $(sudo lsof -t -i:5901) 2>/dev/null || true
-          sudo pkill -9 -f BetterDisplay 2>/dev/null || true
+          # 2. Полная точечная зачистка портов перед стартом
+          echo " >> Cleaning up ports 47989, 47990 and 5902..."
+          sudo kill -9 $(sudo lsof -t -i:5902) 2>/dev/null || true
+          #sudo kill -9 $(sudo lsof -t -i:47989) 2>/dev/null || true
+          #sudo kill -9 $(sudo lsof -t -i:47990) 2>/dev/null || true
+          #sudo pkill -9 -f sunshine 2>/dev/null || true
           sudo pkill -9 -f stream.py 2>/dev/null || true
 
-          # 3. Чистый фоновый запуск BetterDisplay напрямую
-          echo " >> Launching BetterDisplay driver in background..."
-          sudo launchctl asuser 501 "$BD_APP" &
+          # 3. Принудительно генерируем локальный конфиг Sunshine
+          echo " >> Pre-configuring Sunshine options..."
+          mkdir -p /Users/runner/.config/sunshine
+          cat << 'EOF' > /Users/runner/.config/sunshine/sunshine.conf
+          origin_web_ui_allowed = lan
+          min_log_level = info
+          EOF
+          sudo chown -R runner:staff /Users/runner/.config/sunshine
+
+          # 4. Чистый фоновый запуск Sunshine в графической сессии пользователя 501
+          echo " >> Launching Sunshine API engine in background..."
+          sudo launchctl asuser 501 /Applications/Sunshine.app/Contents/MacOS/sunshine &
           
-          # Даем драйверу 5 секунд на создание внутренних сокетов
+          # Даем Sunshine 5 секунд на генерацию SSL-сертификатов и инициализацию портов
           sleep 5
 
-          # 4. Создаем виртуальный FULL HD монитор (1920x1080)
-          echo " >> Activating virtual 1920x1080 frame buffer via CLI..."
-          sudo launchctl asuser 501 "$BD_APP" cli vcreate 1920 1080 || true &
-
-          # 5. Конфигурируем профильные алиасы для супер-быстрого ручного управления по SSH
-          echo " >> Injecting fast 'mac' command alias..."
-          echo "alias mac='sudo launchctl asuser 501 $CLICLICK_PATH'" >> ~/.bash_profile
-          echo "alias mac='sudo launchctl asuser 501 $CLICLICK_PATH'" >> ~/.zshrc
-
-          # 6. Запускаем готовый MJPEG-стример из корня репозитория (файл подтянулся после checkout)
-          echo " >> Starting Python streaming backend from repository root..."
+          # 5. Запускаем готовый Python-автоответчик ПИН-кодов из корня репозитория
+          echo " >> Starting Auto-PIN HTTP Listener on port 5902..."
           sudo launchctl asuser 501 python3 ./stream.py &
           
-          # Ждем 4 секунды, пока macOS зафиксирует попытку захвата и выведет окно безопасности TCC
-          echo " >> Waiting for Apple TCC confirmation window to spawn..."
-          sleep 4
-
-          # 7. АВТО-ПРОЖИМ: Стреляем из кликера точно по кнопке "Allow" на виртуальном 1080p мониторе
-          echo " >> Bypassing Apple Security! Auto-clicking the 'Allow' button..."
-          sudo launchctl asuser 501 "$CLICLICK_PATH" c:960,670
-          sleep 0.5
-          sudo launchctl asuser 501 "$CLICLICK_PATH" c:960,685
+          # Короткая пауза для сокета питона
+          sleep 2
           
           echo "======================================================================"
-          echo " SUCCESSFULLY INITIALIZED! Open http://<YOUR_TAILSCALE_IP>:5901 in your browser."
+          echo " SUNSHINE COMPLETED! To pair Moonlight, open your browser and go to:"
+          echo " http://<YOUR_TAILSCALE_IP>:5902/<FOUR_DIGIT_PIN>"
           echo "======================================================================"
 
       - name: 3. Wait session (7 hours)
