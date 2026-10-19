@@ -92,7 +92,13 @@ jobs:
 
           echo "Проверяем статус SSH..."
           sudo launchctl list | grep sshd || true
-
+      
+      - name: Install Playwright
+        shell: zsh
+        run: |
+            python3 -m pip install --break-system-packages playwright
+            python3 -m playwright install chromium
+    
       - name: 2.1. Deploy Ultra-Fast Sunshine Host Server & Auto-PIN API
         env:
           SUNSHINE_USER: ktoya
