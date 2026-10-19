@@ -30,6 +30,7 @@ WEB_TOKEN = os.environ.get("PAIR_WEB_TOKEN", "")
 # Sunshine использует самоподписанный сертификат
 SSL_CONTEXT = ssl._create_unverified_context()
 
+
 PAGE = """<!doctype html>
 <html lang="ru">
 <head>
@@ -167,7 +168,7 @@ class SunshinePairingHandler(http.server.BaseHTTPRequestHandler):
     sys_version = ""
 
     def log_message(self, fmt, *args):
-        print("[WEB] " + (fmt % args))
+        print("[WEB] " + (fmt % args), flush=True)
 
     def send_json(self, status, data):
         payload = json.dumps(data, ensure_ascii=False).encode("utf-8")
@@ -296,8 +297,10 @@ class SunshinePairingHandler(http.server.BaseHTTPRequestHandler):
             f"{SUNSHINE_USER}:{SUNSHINE_PASSWORD}".encode("utf-8")
         ).decode("ascii")
 
+        api_url = SUNSHINE_API + "/api/pin"
+
         request = urllib.request.Request(
-            SUNSHINE_API + "/api/pin",
+            api_url,
             data=body,
             method="POST",
             headers={
@@ -307,12 +310,20 @@ class SunshinePairingHandler(http.server.BaseHTTPRequestHandler):
             }
         )
 
+        print(f"[API] POST {api_url}", flush=True)
+        print(f"[API] PIN supplied; client name: {name.strip()!r}",
+              flush=True)
+
         try:
             with urllib.request.urlopen(
                 request, context=SSL_CONTEXT, timeout=180
             ) as response:
                 raw = response.read(1024 * 1024)
                 status = response.status
+                final_url = response.geturl()
+
+            print(f"[API] HTTP {status}; final URL: {final_url}", flush=True)
+            print(f"[API] Response body: {raw[:2000]!r}", flush=True)
 
             try:
                 result = json.loads(raw)
@@ -327,23 +338,46 @@ class SunshinePairingHandler(http.server.BaseHTTPRequestHandler):
                 result = {}
 
             if status == 200 and result.get("status") is True:
-                print("[PAIR] Сопряжение подтверждено.")
+                print("[PAIR] Сопряжение подтверждено.", flush=True)
                 self.send_json(200, {
                     "ok": True,
                     "message": "✅ Moonlight успешно сопряжён с Sunshine!"
                 })
             else:
-                print("[PAIR] Sunshine отклонил сопряжение.")
+                print("[PAIR] Sunshine отклонил сопряжение.", flush=True)
                 self.send_json(400, {
                     "ok": False,
                     "message": (
                         "Sunshine не подтвердил сопряжение. "
-                        "Проверь PIN и состояние Moonlight."
+                        "Смотри вывод API в логах."
                     )
                 })
 
         except urllib.error.HTTPError as exc:
-            print(f"[API] Sunshine HTTP error: {exc.code}")
+            print(f"[API] HTTP error: {exc.code}", flush=True)
+            print(f"[API] Request URL: {api_url}", flush=True)
+            print(
+                f"[API] Redirect Location: {exc.headers.get('Location', '')}",
+                flush=True
+            )
+            try:
+                error_body = exc.read(4096)
+                print(f"[API] Error body: {error_body!r}", flush=True)
+            except OSError:
+                pass
+
+            if exc.code == 307:
+                redirect_url = exc.headers.get("Location", "")
+                self.send_json(502, {
+                    "ok": False,
+                    "message": (
+                        "Sunshine вернул HTTP 307. "
+                        f"Адрес перенаправления: {redirect_url or 'не указан'}. "
+                        "Подробности записаны в логи."
+                    )
+                })
+                return
+
             message = {
                 400: "Sunshine отклонил запрос. Проверь параметры API.",
                 401: "Sunshine отклонил учётные данные.",
@@ -351,17 +385,20 @@ class SunshinePairingHandler(http.server.BaseHTTPRequestHandler):
                 404: "API-метод не найден. Проверь версию Sunshine.",
                 409: "Запрос сопряжения конфликтует с текущим состоянием.",
             }.get(exc.code, f"Ошибка Sunshine API: HTTP {exc.code}")
+
             self.send_json(502, {"ok": False, "message": message})
 
         except (urllib.error.URLError, TimeoutError, OSError) as exc:
-            print(f"[API] Ошибка соединения: {type(exc).__name__}")
+            print(f"[API] Ошибка соединения: {type(exc).__name__}: {exc}",
+                  flush=True)
             self.send_json(502, {
                 "ok": False,
                 "message": "Не удалось связаться с Sunshine API."
             })
 
         except Exception as exc:
-            print(f"[API] Внутренняя ошибка: {type(exc).__name__}")
+            print(f"[API] Внутренняя ошибка: {type(exc).__name__}: {exc}",
+                  flush=True)
             self.send_json(500, {
                 "ok": False,
                 "message": "Внутренняя ошибка веб-сервера."
@@ -370,22 +407,25 @@ class SunshinePairingHandler(http.server.BaseHTTPRequestHandler):
 
 def main():
     if not WEB_TOKEN:
-        print("[ERROR] Установи переменную PAIR_WEB_TOKEN.")
+        print("[ERROR] Установи переменную PAIR_WEB_TOKEN.", flush=True)
         raise SystemExit(1)
 
     if not SUNSHINE_USER or not SUNSHINE_PASSWORD:
-        print("[ERROR] Установи SUNSHINE_USER и SUNSHINE_PASSWORD.")
+        print("[ERROR] Установи SUNSHINE_USER и SUNSHINE_PASSWORD.",
+              flush=True)
         raise SystemExit(1)
 
     with ThreadingHTTPServer((HOST, PORT), SunshinePairingHandler) as server:
-        print(f"[+] Sunshine Pairing UI: http://127.0.0.1:{PORT}/")
-        print(f"[+] Listen address: {HOST}:{PORT}")
-        print("[+] API endpoint: " + SUNSHINE_API + "/api/pin")
-        print("[!] Используй веб-панель только в доверенной сети.")
+        print(f"[+] Sunshine Pairing UI: http://127.0.0.1:{PORT}/",
+              flush=True)
+        print(f"[+] Listen address: {HOST}:{PORT}", flush=True)
+        print("[+] API endpoint: " + SUNSHINE_API + "/api/pin", flush=True)
+        print("[!] Используй веб-панель только в доверенной сети.", flush=True)
+
         try:
             server.serve_forever()
         except KeyboardInterrupt:
-            print("\n[+] Сервер остановлен.")
+            print("\n[+] Сервер остановлен.", flush=True)
 
 
 if __name__ == "__main__":
