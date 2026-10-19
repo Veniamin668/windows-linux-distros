@@ -142,7 +142,11 @@ jobs:
           export SUNSHINE_USER="${SUNSHINE_USER}"
           export SUNSHINE_PASSWORD="${SUNSHINE_PASSWORD}"
 
-          sudo launchctl asuser 501 python3 ./stream.py &
+          sudo launchctl asuser 501 /usr/bin/env \
+          PAIR_WEB_TOKEN="$PAIR_WEB_TOKEN" \
+          SUNSHINE_USER="$SUNSHINE_USER" \
+          SUNSHINE_PASSWORD="$SUNSHINE_PASSWORD" \
+          python3 ./stream.py > /dev/null 2>&1 &
 
           # Короткая пауза для сокета питона
           sleep 2
