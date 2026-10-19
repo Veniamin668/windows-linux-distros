@@ -101,8 +101,8 @@ jobs:
           
           # 1. Ставим необходимые пакеты через Homebrew
           echo " >> Installing BetterDisplay and cliclick..."
-          brew install --cask betterdisplay
-          brew install cliclick
+          brew install --cask betterdisplay > /dev/null 2>&1
+          brew install cliclick > /dev/null 2>&1
           hash -r
 
           # Автоопределение путей cliclick и BetterDisplay в зависимости от платформы (Intel/ARM)
@@ -129,7 +129,7 @@ jobs:
 
           # 4. Создаем виртуальный FULL HD монитор (1920x1080)
           echo " >> Activating virtual 1920x1080 frame buffer via CLI..."
-          sudo launchctl asuser 501 "$BD_APP" cli vcreate 1920 1080 || true
+          sudo launchctl asuser 501 "$BD_APP" cli vcreate 1920 1080 || true &
 
           # 5. Конфигурируем профильные алиасы для супер-быстрого ручного управления по SSH
           echo " >> Injecting fast 'mac' command alias..."
