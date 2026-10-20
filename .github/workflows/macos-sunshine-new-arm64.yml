@@ -21,7 +21,7 @@ on:
 
 jobs:
   build-cloud-pc-mac:
-    runs-on: macos-13
+    runs-on: macos-14
     timeout-minutes: 420
 
     steps:
