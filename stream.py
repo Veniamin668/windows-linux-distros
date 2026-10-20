@@ -45,39 +45,15 @@ PAIR_LOCK = threading.Lock()
 # ============================================================
 
 def log(message):
-    print(
-        f"[{time.strftime('%H:%M:%S')}] {message}",
-        flush=True,
-    )
+    print(f"[{time.strftime('%H:%M:%S')}] {message}", flush=True)
 
 
 def safe_url(url):
-    """Return a URL without query parameters."""
     try:
         parsed = urllib.parse.urlparse(url)
         return f"{parsed.scheme}://{parsed.netloc}{parsed.path}"
     except Exception:
         return "<invalid-url>"
-
-
-def safe_response_text(content, limit=1000):
-    """Avoid logging PINs, passwords, tokens, or authorization data."""
-    if not content:
-        return "<empty>"
-
-    result = str(content)
-
-    result = re.sub(
-        r'(?i)("?(?:password|token|authorization|pin)"?\s*[:=]\s*)'
-        r'("[^"]*"|[^,\s}&]+)',
-        r'\1<redacted>',
-        result,
-    )
-
-    if len(result) > limit:
-        result = result[:limit] + "... <truncated>"
-
-    return repr(result)
 
 
 # ============================================================
@@ -196,14 +172,11 @@ form.addEventListener('submit', async (event) => {
 
 class SunshineBrowser:
     """
-    Keeps one Chromium instance alive and uses the real Sunshine
-    /pin page for pairing.
+    Uses the real Sunshine /pin page and its JavaScript.
 
-    Important:
-    - The Welcome setup flow is preserved.
-    - Pairing uses Sunshine's own form and JavaScript.
-    - No direct Python POST to Sunshine /api/pin.
-    - Do not refresh /pin after submitting a PIN.
+    Welcome setup is preserved.
+    Pairing does not send a direct Python POST to /api/pin.
+    The PIN page is not refreshed after a pairing submission.
     """
 
     def __init__(self):
@@ -228,9 +201,9 @@ class SunshineBrowser:
 
         log("[Browser] Starting headless Chromium...")
 
-        self.playwright = sync_playwright().start()
-
         try:
+            self.playwright = sync_playwright().start()
+
             self.browser = self.playwright.chromium.launch(
                 headless=True,
             )
@@ -252,7 +225,7 @@ class SunshineBrowser:
                 timeout=45000,
             )
 
-            # Keep the existing first-time Welcome setup.
+            # Original initial Welcome setup flow.
             if self.is_welcome():
                 self.configure_welcome()
 
@@ -291,11 +264,10 @@ class SunshineBrowser:
 
     def _wait_for_pin_form(self):
         """
-        Sunshine currently uses:
-            form#form
-            input#pin-input
-            input#name-input
-            button[type=submit] with text Send
+        Wait for the actual form fields.
+
+        Do not require a specific submit-button selector here:
+        Sunshine versions may render the submit control differently.
         """
         self.page.locator("#pin-input").wait_for(
             state="visible",
@@ -307,11 +279,49 @@ class SunshineBrowser:
             timeout=15000,
         )
 
-        self.page.locator(
-            "form#form button[type='submit']"
-        ).wait_for(
-            state="visible",
-            timeout=15000,
+    def _find_submit_button(self):
+        """
+        Find Sunshine's submit control across common HTML variants:
+        button[type=submit], input[type=submit], or a button named Send.
+        """
+        selectors = (
+            "form#form button[type='submit']:visible",
+            "form#form input[type='submit']:visible",
+            "form button[type='submit']:visible",
+            "form input[type='submit']:visible",
+            "button[type='submit']:visible",
+            "input[type='submit']:visible",
+            "form#form button:visible",
+            "form button:visible",
+        )
+
+        for selector in selectors:
+            candidate = self.page.locator(selector).first
+
+            try:
+                if candidate.count() and candidate.is_visible():
+                    return candidate
+            except Exception:
+                continue
+
+        # Fallback if Sunshine uses a button labelled Send without
+        # an explicit type="submit" attribute.
+        for name in ("Send", "Pair", "Submit"):
+            try:
+                candidate = self.page.get_by_role(
+                    "button",
+                    name=name,
+                    exact=True,
+                ).first
+
+                if candidate.count() and candidate.is_visible():
+                    return candidate
+            except Exception:
+                continue
+
+        raise RuntimeError(
+            "Sunshine PIN form fields loaded, but no visible submit "
+            "control was found."
         )
 
     # --------------------------------------------------------
@@ -319,7 +329,7 @@ class SunshineBrowser:
     # --------------------------------------------------------
 
     def configure_welcome(self):
-        # Original Welcome setup behavior preserved.
+        # Initial Welcome setup logic intentionally preserved.
         log("[Welcome] Initial Sunshine setup detected.")
 
         self.page.locator("input:visible").first.wait_for(
@@ -416,8 +426,8 @@ class SunshineBrowser:
         self.page.wait_for_timeout(2000)
 
         log(
-            f"[Welcome] Setup form submitted; current page="
-            f"{safe_url(self.page.url)}"
+            "[Welcome] Setup form submitted; current page="
+            + safe_url(self.page.url)
         )
 
     # --------------------------------------------------------
@@ -426,8 +436,6 @@ class SunshineBrowser:
 
     def pair(self, pin, name):
         page = self.start()
-
-        log("[Pairing] Starting Sunshine pairing.")
 
         current_path = (
             urllib.parse.urlparse(page.url).path.rstrip("/").lower()
@@ -449,64 +457,45 @@ class SunshineBrowser:
 
         self._wait_for_pin_form()
 
-        # Exact selectors used by the current Sunshine PIN page.
         pin_field = page.locator("#pin-input")
         name_field = page.locator("#name-input")
-
-        # Prefer the actual Sunshine form's submit button.
-        submit_button = page.locator(
-            "form#form button[type='submit']"
-        )
-
-        if submit_button.count() == 0:
-            # Fallback for Sunshine versions that change the form ID.
-            submit_button = page.locator(
-                "button[type='submit']:visible"
-            )
-
-        if submit_button.count() == 0:
-            raise RuntimeError(
-                "Could not find Sunshine's PIN form submit button."
-            )
 
         # Fill the actual Sunshine form.
         pin_field.fill(pin)
         name_field.fill(name)
 
-        # Ensure the form has accepted both values before clicking.
-        entered_pin_length = pin_field.evaluate(
-            "(element) => String(element.value || '').length"
+        entered_pin = pin_field.input_value()
+        entered_name = name_field.input_value()
+
+        if entered_pin != pin:
+            raise RuntimeError(
+                "Sunshine PIN field did not retain the entered PIN."
+            )
+
+        if entered_name != name:
+            raise RuntimeError(
+                "Sunshine device-name field did not retain the name."
+            )
+
+        submit_button = self._find_submit_button()
+
+        submit_button.wait_for(
+            state="visible",
+            timeout=10000,
         )
-        entered_name_length = name_field.evaluate(
-            "(element) => String(element.value || '').length"
-        )
 
-        if entered_pin_length != 4:
+        if not submit_button.is_enabled():
             raise RuntimeError(
-                "Sunshine PIN field did not accept exactly four digits."
+                "Sunshine submit button is disabled after filling the form."
             )
 
-        if entered_name_length != len(name):
-            raise RuntimeError(
-                "Sunshine device-name field did not accept the full name."
-            )
-
-        button = submit_button.first
-        button.wait_for(state="visible", timeout=10000)
-
-        # Sunshine's button can be disabled while its form is invalid.
-        if not button.is_enabled():
-            raise RuntimeError(
-                "Sunshine's Send button is disabled after filling the form."
-            )
-
-        log("[Pairing] Submitting Sunshine's own PIN form.")
+        log("[Pairing] Submitting Sunshine's PIN form.")
 
         started = time.monotonic()
 
         try:
-            # The Sunshine SPA intercepts the form and sends POST /api/pin.
-            # Wait for that response instead of navigating away or refreshing.
+            # Sunshine's own JavaScript handles the request.
+            # Wait for POST /api/pin instead of navigating away.
             with page.expect_response(
                 lambda response: (
                     urllib.parse.urlparse(response.url).path.rstrip("/")
@@ -515,7 +504,7 @@ class SunshineBrowser:
                 ),
                 timeout=120000,
             ) as response_context:
-                button.click(timeout=15000)
+                submit_button.click(timeout=15000)
 
             response = response_context.value
             elapsed = time.monotonic() - started
@@ -526,29 +515,19 @@ class SunshineBrowser:
                 response_text = ""
 
             log(
-                f"[Pairing] Sunshine returned HTTP {response.status} "
-                f"after {elapsed:.2f}s."
-            )
-
-            log(
-                "[Pairing] Sunshine response: "
-                + safe_response_text(response_text)
+                f"[Pairing] Sunshine responded with HTTP "
+                f"{response.status} after {elapsed:.2f}s."
             )
 
             result = SunshineClient.parse_json(response_text)
 
             if response.status == 200 and result.get("status") is True:
-                log(
-                    "[Pairing] Sunshine accepted the PIN request. "
-                    "Moonlight handshake completion is not guaranteed "
-                    "by the HTTP response alone."
-                )
+                log("[Pairing] Sunshine accepted the PIN request.")
 
                 return True, (
-                    "Sunshine принял PIN-запрос. Если Moonlight всё ещё "
-                    "показывает ошибку, проверь состояние Moonlight и "
-                    "логи Sunshine: ответ API сам по себе не гарантирует "
-                    "завершение всего handshake."
+                    "Sunshine принял PIN-запрос. Это подтверждает "
+                    "приём запроса API, но не гарантирует завершение "
+                    "всего handshake в Moonlight."
                 )
 
             log("[Pairing] Sunshine did not accept the PIN request.")
@@ -564,8 +543,7 @@ class SunshineBrowser:
                 f"{type(error).__name__}: {error}"
             )
 
-            # Do not navigate or refresh here. A pending pairing request
-            # must not be interrupted by an automatic page reload.
+            # Do not refresh or navigate away after submitting.
             return False, (
                 "Не удалось получить ожидаемый ответ от Sunshine. "
                 "Проверь, что Moonlight показывает актуальный PIN, "
@@ -693,8 +671,7 @@ class SunshineClient:
 
             log(
                 f"[SunshineHTTP] {method} {safe_url(url)} "
-                f"HTTP {error.code}; "
-                f"response={safe_response_text(content, 500)}"
+                f"HTTP {error.code}"
             )
 
             return (
@@ -802,6 +779,8 @@ class SunshineClient:
         return True
 
     def refresh_pin_page(self):
+        # Used only as an availability check.
+        # This HTTP request does not refresh the Playwright page.
         status, url, content = self.request(
             "/pin",
             method="GET",
@@ -825,7 +804,7 @@ class SunshineClient:
     # --------------------------------------------------------
 
     def pair(self, pin, name):
-        log("[Pairing] Running Sunshine availability check.")
+        log("[Pairing] Checking Sunshine availability.")
 
         status, url, _ = self.refresh_pin_page()
 
@@ -839,19 +818,7 @@ class SunshineClient:
                 "Проверь первоначальную настройку."
             )
 
-        try:
-            return SUNSHINE_BROWSER.pair(pin, name)
-
-        except Exception as error:
-            log(
-                f"[Pairing] Browser pairing error: "
-                f"{type(error).__name__}: {error}"
-            )
-
-            return False, (
-                "Ошибка выполнения формы Sunshine. "
-                "Проверь логи Actions."
-            )
+        return SUNSHINE_BROWSER.pair(pin, name)
 
 
 SUNSHINE = SunshineClient()
@@ -899,8 +866,6 @@ class PairHandler(http.server.BaseHTTPRequestHandler):
             self.send_error(404)
             return
 
-        # Prevent the token from breaking JavaScript if it contains
-        # characters meaningful in HTML or JavaScript.
         safe_token = json.dumps(WEB_TOKEN)[1:-1]
         page = PAGE.replace("__PANEL_TOKEN__", safe_token)
         body = page.encode("utf-8")
@@ -968,7 +933,7 @@ class PairHandler(http.server.BaseHTTPRequestHandler):
         pin = str(payload.get("pin", "")).strip()
         name = str(payload.get("name", "")).strip()
 
-        # Never print the submitted PIN or credentials.
+        # Never log the submitted PIN or credentials.
         log(
             f"[Panel] Pairing request received; "
             f"PIN length={len(pin)}; name length={len(name)}."
@@ -1038,7 +1003,6 @@ class PairHandler(http.server.BaseHTTPRequestHandler):
             PAIR_LOCK.release()
 
     def log_message(self, fmt, *args):
-        # Keep normal HTTP access logs concise.
         log("[PanelHTTP] " + (fmt % args))
 
 
@@ -1089,8 +1053,7 @@ def main():
             "Check the preceding logs."
         )
 
-    # IMPORTANT:
-    # Keep TCPServer so synchronous Playwright remains on the same
+    # Keep TCPServer: synchronous Playwright must stay on the
     # thread where its instance was created.
     class PairingServer(socketserver.TCPServer):
         allow_reuse_address = True
