@@ -1,8 +1,8 @@
 import atexit
 import base64
 import http.cookiejar
-import http.server
 import hmac
+import http.server
 import json
 import os
 import re
@@ -41,7 +41,7 @@ PAIR_LOCK = threading.Lock()
 
 
 # ============================================================
-# LOGGING HELPERS
+# LOGGING
 # ============================================================
 
 def log(message):
@@ -52,7 +52,7 @@ def log(message):
 
 
 def safe_url(url):
-    """Log URL path only; never print query parameters."""
+    """Return a URL without query parameters."""
     try:
         parsed = urllib.parse.urlparse(url)
         return f"{parsed.scheme}://{parsed.netloc}{parsed.path}"
@@ -60,11 +60,8 @@ def safe_url(url):
         return "<invalid-url>"
 
 
-def safe_response_text(content, limit=1500):
-    """
-    Truncate a response and redact common sensitive fields.
-    Never log request bodies, submitted PINs, or credentials.
-    """
+def safe_response_text(content, limit=1000):
+    """Avoid logging PINs, passwords, tokens, or authorization data."""
     if not content:
         return "<empty>"
 
@@ -84,7 +81,7 @@ def safe_response_text(content, limit=1500):
 
 
 # ============================================================
-# WEB PAGE
+# PAIRING PANEL
 # ============================================================
 
 PAGE = r"""<!doctype html>
@@ -125,17 +122,22 @@ button:disabled{opacity:.6;cursor:wait}
 <main>
 <h1>Moonlight Pairing</h1>
 <p>Введи PIN, показанный в Moonlight, и имя устройства.</p>
+
 <form id="pairForm">
 <label for="pin">PIN</label>
-<input id="pin" name="pin" inputmode="numeric"
+<input id="pin" name="pin" type="text" inputmode="numeric"
        pattern="[0-9]{4}" maxlength="4" placeholder="1234" required>
+
 <label for="name">Имя устройства</label>
-<input id="name" name="name" maxlength="100"
+<input id="name" name="name" type="text" maxlength="100"
        value="Moonlight Client" required>
+
 <button id="submit" type="submit">Подтвердить сопряжение</button>
 </form>
-<div id="status" role="status"></div>
+
+<div id="status" role="status" aria-live="polite"></div>
 </main>
+
 <script>
 const form = document.getElementById('pairForm');
 const button = document.getElementById('submit');
@@ -143,6 +145,9 @@ const statusBox = document.getElementById('status');
 
 form.addEventListener('submit', async (event) => {
   event.preventDefault();
+
+  if (button.disabled) return;
+
   button.disabled = true;
   statusBox.textContent = 'Отправка запроса...';
 
@@ -159,7 +164,14 @@ form.addEventListener('submit', async (event) => {
       })
     });
 
-    const result = await response.json();
+    let result;
+
+    try {
+      result = await response.json();
+    } catch {
+      throw new Error('Сервер вернул некорректный ответ.');
+    }
+
     statusBox.textContent = result.message ||
       (result.ok ? 'Запрос обработан.' : 'Не удалось выполнить pairing.');
 
@@ -179,238 +191,42 @@ form.addEventListener('submit', async (event) => {
 
 
 # ============================================================
-# HIDDEN SUNSHINE BROWSER
+# SUNSHINE BROWSER
 # ============================================================
 
 class SunshineBrowser:
+    """
+    Keeps one Chromium instance alive and uses the real Sunshine
+    /pin page for pairing.
+
+    Important:
+    - The Welcome setup flow is preserved.
+    - Pairing uses Sunshine's own form and JavaScript.
+    - No direct Python POST to Sunshine /api/pin.
+    - Do not refresh /pin after submitting a PIN.
+    """
+
     def __init__(self):
         self.playwright = None
         self.browser = None
         self.context = None
         self.page = None
-        self._events_attached = False
 
     # --------------------------------------------------------
-    # BROWSER DIAGNOSTICS
-    # --------------------------------------------------------
-
-    def _attach_diagnostics(self):
-        if self.page is None or self._events_attached:
-            return
-
-        self._events_attached = True
-
-        self.page.on(
-            "console",
-            self._on_console,
-        )
-
-        self.page.on(
-            "pageerror",
-            self._on_page_error,
-        )
-
-        self.page.on(
-            "requestfailed",
-            self._on_request_failed,
-        )
-
-        self.page.on(
-            "request",
-            self._on_request,
-        )
-
-        self.page.on(
-            "response",
-            self._on_response,
-        )
-
-        self.page.on(
-            "framenavigated",
-            self._on_frame_navigated,
-        )
-
-        log("[BrowserDiag] Browser event listeners attached.")
-
-    def _on_console(self, message):
-        try:
-            message_type = message.type
-            message_text = message.text
-
-            # Do not print arbitrary console output without a limit.
-            if len(message_text) > 1000:
-                message_text = message_text[:1000] + "... <truncated>"
-
-            log(
-                f"[BrowserConsole] type={message_type}; "
-                f"text={message_text!r}"
-            )
-        except Exception as error:
-            log(f"[BrowserConsole] Could not read console message: {error}")
-
-    def _on_page_error(self, error):
-        log(f"[BrowserPageError] {error}")
-
-    def _on_request_failed(self, request):
-        try:
-            log(
-                f"[BrowserNetwork] REQUEST FAILED "
-                f"{request.method} {safe_url(request.url)}; "
-                f"failure={request.failure}"
-            )
-        except Exception as error:
-            log(f"[BrowserNetwork] Failed-request diagnostic error: {error}")
-
-    def _on_request(self, request):
-        try:
-            parsed = urllib.parse.urlparse(request.url)
-            path = parsed.path.lower()
-
-            # Log API calls and document navigations, not every asset.
-            interesting = (
-                path.startswith("/api/")
-                or request.is_navigation_request()
-                or path in ("/pin", "/welcome")
-            )
-
-            if not interesting:
-                return
-
-            log(
-                f"[BrowserNetwork] REQUEST "
-                f"{request.method} {safe_url(request.url)}; "
-                f"resource={request.resource_type}; "
-                f"navigation={request.is_navigation_request()}"
-            )
-
-            # Deliberately do not print request.post_data:
-            # it may contain the PIN or other sensitive values.
-
-        except Exception as error:
-            log(f"[BrowserNetwork] Request diagnostic error: {error}")
-
-    def _on_response(self, response):
-        try:
-            parsed = urllib.parse.urlparse(response.url)
-            path = parsed.path.lower()
-
-            interesting = (
-                path.startswith("/api/")
-                or path in ("/pin", "/welcome")
-            )
-
-            if not interesting:
-                return
-
-            request = response.request
-
-            log(
-                f"[BrowserNetwork] RESPONSE "
-                f"{request.method} {safe_url(response.url)}; "
-                f"HTTP={response.status}; "
-                f"ok={response.ok}; "
-                f"resource={request.resource_type}"
-            )
-
-        except Exception as error:
-            log(f"[BrowserNetwork] Response diagnostic error: {error}")
-
-    def _on_frame_navigated(self, frame):
-        try:
-            if frame == self.page.main_frame:
-                log(
-                    f"[BrowserNavigation] Main frame navigated to "
-                    f"{safe_url(frame.url)}"
-                )
-        except Exception as error:
-            log(f"[BrowserNavigation] Diagnostic error: {error}")
-
-    def _dump_page_state(self, label):
-        if self.page is None:
-            log(f"[DOM] {label}: page is None.")
-            return
-
-        log(f"[DOM] ===== PAGE SNAPSHOT: {label} =====")
-        log(f"[DOM] URL: {safe_url(self.page.url)}")
-
-        try:
-            title = self.page.title()
-            log(f"[DOM] Title: {title!r}")
-        except Exception as error:
-            log(f"[DOM] Could not read title: {error}")
-
-        try:
-            snapshot = self.page.evaluate(
-                """() => ({
-                    readyState: document.readyState,
-                    bodyText: (document.body?.innerText || '').slice(0, 2000),
-                    forms: Array.from(document.forms).map((form, index) => ({
-                        index,
-                        id: form.id || '',
-                        name: form.name || '',
-                        action: form.getAttribute('action') || '',
-                        method: form.getAttribute('method') || 'GET',
-                        visible: !!(
-                            form.offsetWidth ||
-                            form.offsetHeight ||
-                            form.getClientRects().length
-                        ),
-                        inputs: Array.from(form.querySelectorAll('input')).map(
-                            (input) => ({
-                                type: input.type || '',
-                                name: input.name || '',
-                                id: input.id || '',
-                                placeholder: input.placeholder || '',
-                                ariaLabel: input.getAttribute('aria-label') || '',
-                                autocomplete: input.autocomplete || '',
-                                inputMode: input.inputMode || '',
-                                visible: !!(
-                                    input.offsetWidth ||
-                                    input.offsetHeight ||
-                                    input.getClientRects().length
-                                ),
-                                disabled: input.disabled
-                            })
-                        ),
-                        buttons: Array.from(
-                            form.querySelectorAll(
-                                'button, input[type="submit"], input[type="button"]'
-                            )
-                        ).map((button) => ({
-                            tag: button.tagName,
-                            type: button.type || '',
-                            text: (button.innerText || button.value || '').trim(),
-                            name: button.name || '',
-                            id: button.id || '',
-                            disabled: !!button.disabled
-                        }))
-                    }))
-                })"""
-            )
-
-            log(
-                "[DOM] Snapshot: "
-                + json.dumps(snapshot, ensure_ascii=False)
-            )
-
-        except Exception as error:
-            log(f"[DOM] Snapshot failed: {error}")
-
-        log(f"[DOM] ===== END SNAPSHOT: {label} =====")
-
-    # --------------------------------------------------------
-    # START
+    # START / INITIALIZATION
     # --------------------------------------------------------
 
     def start(self):
         if self.browser is not None and self.page is not None:
-            if not self.browser.is_connected():
-                log("[Browser] Existing browser disconnected; restarting.")
-                self.close()
-            else:
-                return self.page
+            try:
+                if self.browser.is_connected():
+                    return self.page
+            except Exception:
+                pass
 
-        log("[Browser] Starting Chromium with headless=True...")
+            self.close()
+
+        log("[Browser] Starting headless Chromium...")
 
         self.playwright = sync_playwright().start()
 
@@ -418,8 +234,6 @@ class SunshineBrowser:
             self.browser = self.playwright.chromium.launch(
                 headless=True,
             )
-
-            log("[Browser] Chromium launched successfully.")
 
             self.context = self.browser.new_context(
                 ignore_https_errors=True,
@@ -429,16 +243,8 @@ class SunshineBrowser:
                 },
             )
 
-            log("[Browser] Browser context created.")
-
             self.page = self.context.new_page()
             self.page.set_default_timeout(15000)
-
-            self._attach_diagnostics()
-
-            log("[Browser] Opening Sunshine root page...")
-
-            start_time = time.monotonic()
 
             self.page.goto(
                 SUNSHINE_API + "/",
@@ -446,19 +252,11 @@ class SunshineBrowser:
                 timeout=45000,
             )
 
-            log(
-                f"[Browser] Root navigation finished in "
-                f"{time.monotonic() - start_time:.2f}s; "
-                f"URL={safe_url(self.page.url)}"
-            )
-
-            # Welcome logic remains unchanged.
+            # Keep the existing first-time Welcome setup.
             if self.is_welcome():
                 self.configure_welcome()
 
             log("[Browser] Opening Sunshine PIN page...")
-
-            start_time = time.monotonic()
 
             self.page.goto(
                 SUNSHINE_API + "/pin",
@@ -466,27 +264,18 @@ class SunshineBrowser:
                 timeout=45000,
             )
 
-            log(
-                f"[Browser] PIN navigation finished in "
-                f"{time.monotonic() - start_time:.2f}s; "
-                f"URL={safe_url(self.page.url)}"
-            )
-
             if self.is_welcome():
                 raise RuntimeError(
                     "Sunshine redirected to /welcome after setup."
                 )
 
-            self._dump_page_state("initial /pin")
+            self._wait_for_pin_form()
 
-            log(
-                "[Browser] PIN page is ready. Chromium remains running."
-            )
-
+            log("[Browser] Sunshine PIN page is ready.")
             return self.page
 
         except Exception:
-            log("[Browser] Startup failed; closing browser.")
+            log("[Browser] Initialization failed.")
             self.close()
             raise
 
@@ -500,11 +289,38 @@ class SunshineBrowser:
         except Exception:
             return False
 
-    def configure_welcome(self):
-        # Original Welcome flow preserved.
-        log(
-            "[Browser] Welcome detected. Filling administrator form..."
+    def _wait_for_pin_form(self):
+        """
+        Sunshine currently uses:
+            form#form
+            input#pin-input
+            input#name-input
+            button[type=submit] with text Send
+        """
+        self.page.locator("#pin-input").wait_for(
+            state="visible",
+            timeout=30000,
         )
+
+        self.page.locator("#name-input").wait_for(
+            state="visible",
+            timeout=15000,
+        )
+
+        self.page.locator(
+            "form#form button[type='submit']"
+        ).wait_for(
+            state="visible",
+            timeout=15000,
+        )
+
+    # --------------------------------------------------------
+    # WELCOME SETUP
+    # --------------------------------------------------------
+
+    def configure_welcome(self):
+        # Original Welcome setup behavior preserved.
+        log("[Welcome] Initial Sunshine setup detected.")
 
         self.page.locator("input:visible").first.wait_for(
             state="visible",
@@ -516,17 +332,9 @@ class SunshineBrowser:
             "input[type='password']:visible"
         )
 
-        password_count = password_inputs.count()
-
-        log(
-            f"[Welcome] Visible inputs={visible_inputs.count()}; "
-            f"visible password fields={password_count}"
-        )
-
-        if password_count < 2:
+        if password_inputs.count() < 2:
             raise RuntimeError(
-                "Welcome form must contain two visible password fields; "
-                f"found {password_count}."
+                "Welcome form must contain two visible password fields."
             )
 
         username_field = None
@@ -542,7 +350,6 @@ class SunshineBrowser:
 
             if candidate.count() > 0:
                 username_field = candidate.first
-                log(f"[Welcome] Username selector: {selector}")
                 break
 
         if username_field is None:
@@ -562,9 +369,6 @@ class SunshineBrowser:
                     "radio",
                 ):
                     username_field = candidate
-                    log(
-                        f"[Welcome] Username fallback input index={index}"
-                    )
                     break
 
         if username_field is None:
@@ -576,11 +380,6 @@ class SunshineBrowser:
         password_inputs.nth(0).fill(SUNSHINE_PASSWORD)
         password_inputs.nth(1).fill(SUNSHINE_PASSWORD)
 
-        log(
-            "[Welcome] Username and both password fields filled. "
-            "Credential values are not logged."
-        )
-
         login_button = self.page.get_by_role(
             "button",
             name="Login",
@@ -591,14 +390,10 @@ class SunshineBrowser:
             login_button = self.page.locator(
                 "button:visible, input[type='submit']:visible"
             ).filter(
-                has_text=re.compile(r"^\s*Login\s*$", re.IGNORECASE)
-            )
-
-        if login_button.count() == 0:
-            login_button = self.page.locator(
-                "input[type='button']:visible"
-            ).filter(
-                has=self.page.locator("text=Login")
+                has_text=re.compile(
+                    r"^\s*Login\s*$",
+                    re.IGNORECASE,
+                )
             )
 
         if login_button.count() == 0:
@@ -606,7 +401,7 @@ class SunshineBrowser:
                 "Sunshine Welcome Login button was not found."
             )
 
-        log("[Welcome] Clicking Login.")
+        log("[Welcome] Submitting initial administrator setup.")
 
         login_button.first.click()
 
@@ -615,322 +410,31 @@ class SunshineBrowser:
                 "domcontentloaded",
                 timeout=15000,
             )
-        except Exception as error:
-            log(
-                f"[Welcome] Navigation wait ended without confirmation: "
-                f"{error}"
-            )
+        except Exception:
+            pass
 
         self.page.wait_for_timeout(2000)
 
         log(
-            f"[Welcome] After Login click: {safe_url(self.page.url)}"
+            f"[Welcome] Setup form submitted; current page="
+            f"{safe_url(self.page.url)}"
         )
 
     # --------------------------------------------------------
-    # PIN PAGE HELPERS
-    # --------------------------------------------------------
-
-    @staticmethod
-    def _input_description(locator):
-        values = []
-
-        for attribute in (
-            "name",
-            "id",
-            "placeholder",
-            "aria-label",
-            "autocomplete",
-            "inputmode",
-        ):
-            try:
-                value = locator.get_attribute(attribute)
-
-                if value:
-                    values.append(value)
-            except Exception:
-                pass
-
-        try:
-            input_type = locator.get_attribute("type")
-
-            if input_type:
-                values.append(input_type)
-        except Exception:
-            pass
-
-        return " ".join(values).lower()
-
-    @staticmethod
-    def _same_element(first, second):
-        """
-        Compare DOM element identity without passing a Locator as a JS argument.
-        """
-        try:
-            first_index = first.evaluate(
-                "(element) => Array.from("
-                "document.querySelectorAll('input')"
-                ").indexOf(element)"
-            )
-
-            second_index = second.evaluate(
-                "(element) => Array.from("
-                "document.querySelectorAll('input')"
-                ").indexOf(element)"
-            )
-
-            return (
-                first_index >= 0
-                and second_index >= 0
-                and first_index == second_index
-            )
-
-        except Exception:
-            return False
-
-    def _find_pin_field(self):
-        selectors = (
-            "input[name='pin']:visible",
-            "input#pin:visible",
-            "input[autocomplete='one-time-code']:visible",
-            "input[inputmode='numeric']:visible",
-            "input[placeholder*='PIN' i]:visible",
-            "input[aria-label*='PIN' i]:visible",
-            "input[name*='pin' i]:visible",
-            "input[id*='pin' i]:visible",
-        )
-
-        for selector in selectors:
-            candidate = self.page.locator(selector)
-
-            if candidate.count() > 0:
-                log(
-                    f"[PairingDiag] PIN field found by selector "
-                    f"{selector!r}; matches={candidate.count()}"
-                )
-                return candidate.first
-
-        inputs = self.page.locator(
-            "input:visible:not([type='hidden'])"
-        )
-
-        for index in range(inputs.count()):
-            candidate = inputs.nth(index)
-            description = self._input_description(candidate)
-
-            log(
-                f"[PairingDiag] Candidate PIN input index={index}; "
-                f"attributes={description!r}"
-            )
-
-            if "password" in description:
-                continue
-
-            if "pin" in description or "numeric" in description:
-                log(
-                    f"[PairingDiag] PIN field selected by fallback "
-                    f"index={index}"
-                )
-                return candidate
-
-        return None
-
-    def _find_name_field(self, pin_field):
-        selectors = (
-            "input[name='name']:visible",
-            "input#name:visible",
-            "input[name*='device' i]:visible",
-            "input[id*='device' i]:visible",
-            "input[placeholder*='name' i]:visible",
-            "input[aria-label*='name' i]:visible",
-            "input[name*='name' i]:visible",
-        )
-
-        for selector in selectors:
-            candidates = self.page.locator(selector)
-
-            for index in range(candidates.count()):
-                candidate = candidates.nth(index)
-
-                if self._same_element(candidate, pin_field):
-                    continue
-
-                log(
-                    f"[PairingDiag] Device-name field found by "
-                    f"selector {selector!r}; candidate={index}"
-                )
-
-                return candidate
-
-        inputs = self.page.locator(
-            "input:visible:not([type='hidden'])"
-        )
-
-        for index in range(inputs.count()):
-            candidate = inputs.nth(index)
-            description = self._input_description(candidate)
-
-            log(
-                f"[PairingDiag] Candidate name input index={index}; "
-                f"attributes={description!r}"
-            )
-
-            if self._same_element(candidate, pin_field):
-                continue
-
-            if "password" in description:
-                continue
-
-            if "name" in description or "device" in description:
-                log(
-                    f"[PairingDiag] Device-name field selected by "
-                    f"attribute fallback index={index}"
-                )
-                return candidate
-
-        for index in range(inputs.count()):
-            candidate = inputs.nth(index)
-
-            if self._same_element(candidate, pin_field):
-                continue
-
-            try:
-                input_type = (
-                    candidate.get_attribute("type") or "text"
-                ).lower()
-
-                if input_type in (
-                    "text",
-                    "search",
-                    "tel",
-                    "number",
-                    "email",
-                ):
-                    log(
-                        f"[PairingDiag] Device-name field selected by "
-                        f"type fallback index={index}; type={input_type}"
-                    )
-                    return candidate
-
-            except Exception:
-                continue
-
-        return None
-
-    def _find_submit_button(self):
-        for pattern in (
-            r"pair",
-            r"submit",
-            r"connect",
-            r"confirm",
-            r"сопряж",
-            r"подтверд",
-            r"подключ",
-        ):
-            candidate = self.page.get_by_role(
-                "button",
-                name=re.compile(pattern, re.IGNORECASE),
-            )
-
-            for index in range(candidate.count()):
-                button = candidate.nth(index)
-
-                try:
-                    if button.is_visible() and button.is_enabled():
-                        log(
-                            f"[PairingDiag] Submit button selected by "
-                            f"accessible-name pattern={pattern!r}; "
-                            f"candidate={index}"
-                        )
-                        return button
-                except Exception:
-                    continue
-
-        for selector in (
-            "form:visible button[type='submit']",
-            "form:visible input[type='submit']",
-            "button:visible",
-        ):
-            candidates = self.page.locator(selector)
-
-            for index in range(candidates.count()):
-                candidate = candidates.nth(index)
-
-                try:
-                    if candidate.is_visible() and candidate.is_enabled():
-                        log(
-                            f"[PairingDiag] Submit button selected by "
-                            f"fallback selector={selector!r}; "
-                            f"candidate={index}"
-                        )
-                        return candidate
-                except Exception:
-                    continue
-
-        return None
-
-    def _describe_locator(self, label, locator):
-        try:
-            description = locator.evaluate(
-                """element => ({
-                    tag: element.tagName,
-                    type: element.getAttribute('type') || '',
-                    name: element.getAttribute('name') || '',
-                    id: element.id || '',
-                    placeholder: element.getAttribute('placeholder') || '',
-                    ariaLabel: element.getAttribute('aria-label') || '',
-                    autocomplete: element.getAttribute('autocomplete') || '',
-                    inputMode: element.getAttribute('inputmode') || '',
-                    disabled: !!element.disabled,
-                    visible: !!(
-                        element.offsetWidth ||
-                        element.offsetHeight ||
-                        element.getClientRects().length
-                    ),
-                    form: element.form ? {
-                        id: element.form.id || '',
-                        action: element.form.getAttribute('action') || '',
-                        method: element.form.getAttribute('method') || 'GET'
-                    } : null,
-                    text: (element.innerText || element.value || '')
-                        .trim().slice(0, 200)
-                })"""
-            )
-
-            log(
-                f"[PairingDiag] {label}: "
-                + json.dumps(description, ensure_ascii=False)
-            )
-
-        except Exception as error:
-            log(
-                f"[PairingDiag] Could not describe {label}: {error}"
-            )
-
-    # --------------------------------------------------------
-    # PAIRING
+    # PAIRING FORM
     # --------------------------------------------------------
 
     def pair(self, pin, name):
         page = self.start()
 
-        log("[Pairing] ===== NEW PAIRING ATTEMPT =====")
-        log("[Pairing] PIN received by server: four-digit value redacted.")
-        log(f"[Pairing] Device name length={len(name)}.")
+        log("[Pairing] Starting Sunshine pairing.")
 
         current_path = (
             urllib.parse.urlparse(page.url).path.rstrip("/").lower()
         )
 
-        log(
-            f"[PairingDiag] Current page path={current_path!r}"
-        )
-
         if current_path != "/pin":
-            log(
-                "[PairingDiag] Current page is not /pin; navigating "
-                "to the PIN page before submitting."
-            )
+            log("[Pairing] Opening Sunshine /pin page.")
 
             page.goto(
                 SUNSHINE_API + "/pin",
@@ -943,212 +447,129 @@ class SunshineBrowser:
                 "Sunshine redirected to Welcome during pairing."
             )
 
-        self._dump_page_state("before pairing")
+        self._wait_for_pin_form()
 
-        log("[PairingDiag] Searching for PIN input...")
-        pin_field = self._find_pin_field()
+        # Exact selectors used by the current Sunshine PIN page.
+        pin_field = page.locator("#pin-input")
+        name_field = page.locator("#name-input")
 
-        if pin_field is None:
-            self._dump_page_state("PIN field not found")
-
-            raise RuntimeError(
-                "Could not find a visible PIN input on Sunshine /pin."
-            )
-
-        log("[PairingDiag] Searching for device-name input...")
-        name_field = self._find_name_field(pin_field)
-
-        if name_field is None:
-            self._dump_page_state("device-name field not found")
-
-            raise RuntimeError(
-                "Could not find a visible device-name input on Sunshine /pin."
-            )
-
-        log("[PairingDiag] Searching for submit button...")
-        submit_button = self._find_submit_button()
-
-        if submit_button is None:
-            self._dump_page_state("submit button not found")
-
-            raise RuntimeError(
-                "Could not find an enabled pairing submit button on /pin."
-            )
-
-        self._describe_locator("PIN input", pin_field)
-        self._describe_locator("Device-name input", name_field)
-        self._describe_locator("Submit button", submit_button)
-
-        try:
-            pin_field.fill(pin)
-            log("[PairingDiag] PIN filled; value not logged.")
-
-            name_field.fill(name)
-            log("[PairingDiag] Device name filled.")
-
-        except Exception as error:
-            log(
-                f"[PairingDiag] Failed to fill fields: "
-                f"{type(error).__name__}: {error}"
-            )
-            self._dump_page_state("field filling failed")
-            raise
-
-        # Verify field lengths without revealing either value.
-        try:
-            pin_length = pin_field.evaluate(
-                "(element) => String(element.value || '').length"
-            )
-            name_length = name_field.evaluate(
-                "(element) => String(element.value || '').length"
-            )
-
-            log(
-                f"[PairingDiag] Field verification: "
-                f"PIN length={pin_length}; name length={name_length}"
-            )
-
-            if pin_length != 4:
-                raise RuntimeError(
-                    f"PIN input contains {pin_length} characters after fill."
-                )
-
-            if name_length != len(name):
-                raise RuntimeError(
-                    "Device-name field length differs from submitted name."
-                )
-
-        except Exception as error:
-            log(
-                f"[PairingDiag] Field verification failed: "
-                f"{type(error).__name__}: {error}"
-            )
-            raise
-
-        log(
-            "[Pairing] Submitting the actual Sunshine form. "
-            "No direct Python POST to /api/pin will be made."
+        # Prefer the actual Sunshine form's submit button.
+        submit_button = page.locator(
+            "form#form button[type='submit']"
         )
 
+        if submit_button.count() == 0:
+            # Fallback for Sunshine versions that change the form ID.
+            submit_button = page.locator(
+                "button[type='submit']:visible"
+            )
+
+        if submit_button.count() == 0:
+            raise RuntimeError(
+                "Could not find Sunshine's PIN form submit button."
+            )
+
+        # Fill the actual Sunshine form.
+        pin_field.fill(pin)
+        name_field.fill(name)
+
+        # Ensure the form has accepted both values before clicking.
+        entered_pin_length = pin_field.evaluate(
+            "(element) => String(element.value || '').length"
+        )
+        entered_name_length = name_field.evaluate(
+            "(element) => String(element.value || '').length"
+        )
+
+        if entered_pin_length != 4:
+            raise RuntimeError(
+                "Sunshine PIN field did not accept exactly four digits."
+            )
+
+        if entered_name_length != len(name):
+            raise RuntimeError(
+                "Sunshine device-name field did not accept the full name."
+            )
+
+        button = submit_button.first
+        button.wait_for(state="visible", timeout=10000)
+
+        # Sunshine's button can be disabled while its form is invalid.
+        if not button.is_enabled():
+            raise RuntimeError(
+                "Sunshine's Send button is disabled after filling the form."
+            )
+
+        log("[Pairing] Submitting Sunshine's own PIN form.")
+
         started = time.monotonic()
-        response_info = None
 
         try:
-            # Wait for the actual POST generated by the Sunshine UI.
-            # Do not navigate away or refresh /pin after submission:
-            # a pairing handshake may still be in progress.
+            # The Sunshine SPA intercepts the form and sends POST /api/pin.
+            # Wait for that response instead of navigating away or refreshing.
             with page.expect_response(
                 lambda response: (
-                    urllib.parse.urlparse(response.url)
-                    .path.rstrip("/")
+                    urllib.parse.urlparse(response.url).path.rstrip("/")
                     .lower() == "/api/pin"
                     and response.request.method.upper() == "POST"
                 ),
                 timeout=120000,
-            ) as response_info_context:
-                log("[PairingDiag] Clicking the selected submit button...")
-                submit_button.click(timeout=15000)
-                log(
-                    "[PairingDiag] Click returned. Waiting for "
-                    "Sunshine POST /api/pin response..."
-                )
+            ) as response_context:
+                button.click(timeout=15000)
 
-            response_info = response_info_context.value
+            response = response_context.value
             elapsed = time.monotonic() - started
 
-            response_status = response_info.status
-            response_url = safe_url(response_info.url)
-
             try:
-                response_content = response_info.text()
-            except Exception as error:
-                response_content = ""
+                response_text = response.text()
+            except Exception:
+                response_text = ""
+
+            log(
+                f"[Pairing] Sunshine returned HTTP {response.status} "
+                f"after {elapsed:.2f}s."
+            )
+
+            log(
+                "[Pairing] Sunshine response: "
+                + safe_response_text(response_text)
+            )
+
+            result = SunshineClient.parse_json(response_text)
+
+            if response.status == 200 and result.get("status") is True:
                 log(
-                    f"[PairingDiag] Could not read response body: "
-                    f"{type(error).__name__}: {error}"
-                )
-
-            log(
-                f"[Pairing] POST /api/pin response received after "
-                f"{elapsed:.2f}s."
-            )
-
-            log(f"[Pairing] Response URL: {response_url}")
-            log(f"[Pairing] HTTP status: {response_status}")
-            log(
-                "[Pairing] Response body: "
-                + safe_response_text(response_content)
-            )
-
-            result = SunshineClient.parse_json(response_content)
-
-            log(
-                "[Pairing] Parsed JSON: "
-                + json.dumps(result, ensure_ascii=False)
-            )
-
-            log(
-                f"[PairingDiag] Page URL after POST: "
-                f"{safe_url(page.url)}"
-            )
-
-            self._dump_page_state("immediately after /api/pin response")
-
-            if response_status == 200 and result.get("status") is True:
-                log(
-                    "[Pairing] Sunshine returned status=true for the "
-                    "PIN request. This confirms the HTTP/API response, "
-                    "but does not by itself prove Moonlight completed "
-                    "the entire pairing handshake."
+                    "[Pairing] Sunshine accepted the PIN request. "
+                    "Moonlight handshake completion is not guaranteed "
+                    "by the HTTP response alone."
                 )
 
                 return True, (
-                    "Sunshine принял PIN-запрос. "
-                    "Если Moonlight всё ещё показывает ошибку, "
-                    "смотри логи Sunshine и Moonlight: HTTP-ответ "
-                    "не гарантирует завершение handshake."
+                    "Sunshine принял PIN-запрос. Если Moonlight всё ещё "
+                    "показывает ошибку, проверь состояние Moonlight и "
+                    "логи Sunshine: ответ API сам по себе не гарантирует "
+                    "завершение всего handshake."
                 )
 
-            log(
-                "[Pairing] Sunshine did not return the expected "
-                "HTTP 200 + status=true combination."
-            )
+            log("[Pairing] Sunshine did not accept the PIN request.")
 
             return False, (
-                f"Sunshine вернул HTTP {response_status}; "
-                "подробности находятся в логах Actions."
+                f"Sunshine вернул HTTP {response.status}. "
+                "Проверь PIN и состояние Moonlight."
             )
 
         except Exception as error:
-            elapsed = time.monotonic() - started
-
             log(
-                f"[Pairing] Submission/wait failed after "
-                f"{elapsed:.2f}s."
+                f"[Pairing] Submission failed: "
+                f"{type(error).__name__}: {error}"
             )
 
-            log(
-                f"[Pairing] Exception type={type(error).__name__}; "
-                f"message={error}"
-            )
-
-            log(
-                f"[PairingDiag] Current page URL: "
-                f"{safe_url(page.url)}"
-            )
-
-            self._dump_page_state("pairing exception")
-
-            # Intentionally do NOT navigate back to /pin here.
-            # Refreshing the page can disturb a pending pairing flow.
-            log(
-                "[PairingDiag] Leaving the current page untouched after "
-                "the failure to avoid interrupting a pending handshake."
-            )
-
+            # Do not navigate or refresh here. A pending pairing request
+            # must not be interrupted by an automatic page reload.
             return False, (
                 "Не удалось получить ожидаемый ответ от Sunshine. "
-                "Подробности смотри в логах Actions."
+                "Проверь, что Moonlight показывает актуальный PIN, "
+                "и посмотри логи Actions."
             )
 
     # --------------------------------------------------------
@@ -1156,33 +577,28 @@ class SunshineBrowser:
     # --------------------------------------------------------
 
     def close(self):
-        log("[Browser] Closing Chromium resources...")
-
         if self.context is not None:
             try:
                 self.context.close()
-            except Exception as error:
-                log(f"[Browser] Context close warning: {error}")
+            except Exception:
+                pass
             self.context = None
 
         if self.browser is not None:
             try:
                 self.browser.close()
-            except Exception as error:
-                log(f"[Browser] Browser close warning: {error}")
+            except Exception:
+                pass
             self.browser = None
 
         if self.playwright is not None:
             try:
                 self.playwright.stop()
-            except Exception as error:
-                log(f"[Browser] Playwright stop warning: {error}")
+            except Exception:
+                pass
             self.playwright = None
 
         self.page = None
-        self._events_attached = False
-
-        log("[Browser] Chromium stopped.")
 
 
 SUNSHINE_BROWSER = SunshineBrowser()
@@ -1247,11 +663,6 @@ class SunshineClient:
 
         started = time.monotonic()
 
-        log(
-            f"[SunshineHTTP] {method} {safe_url(url)}; "
-            f"timeout={timeout}s; auth={'yes' if auth else 'no'}"
-        )
-
         try:
             with self.opener.open(
                 request,
@@ -1263,9 +674,9 @@ class SunshineClient:
                 )
 
                 log(
-                    f"[SunshineHTTP] HTTP {response.status}; "
-                    f"URL={safe_url(response.geturl())}; "
-                    f"elapsed={time.monotonic() - started:.2f}s"
+                    f"[SunshineHTTP] {method} {safe_url(url)} "
+                    f"HTTP {response.status} "
+                    f"({time.monotonic() - started:.2f}s)"
                 )
 
                 return (
@@ -1281,10 +692,8 @@ class SunshineClient:
             )
 
             log(
-                f"[SunshineHTTP] HTTP ERROR {error.code}; "
-                f"URL={safe_url(error.geturl())}; "
-                f"Location={safe_url(error.headers.get('Location', ''))}; "
-                f"elapsed={time.monotonic() - started:.2f}s; "
+                f"[SunshineHTTP] {method} {safe_url(url)} "
+                f"HTTP {error.code}; "
                 f"response={safe_response_text(content, 500)}"
             )
 
@@ -1296,9 +705,8 @@ class SunshineClient:
 
         except Exception as error:
             log(
-                f"[SunshineHTTP] Request failed for {safe_url(url)}; "
-                f"elapsed={time.monotonic() - started:.2f}s; "
-                f"error={type(error).__name__}: {error}"
+                f"[SunshineHTTP] Request failed for {safe_url(url)}: "
+                f"{type(error).__name__}: {error}"
             )
 
             return 0, url, str(error)
@@ -1324,15 +732,18 @@ class SunshineClient:
 
         if status != 200:
             log(
-                f"[Sunshine] Auth check failed: "
+                f"[Sunshine] Authentication check failed: "
                 f"HTTP {status}; URL={safe_url(url)}"
             )
             return False
 
         result = self.parse_json(content)
 
-        if not result and content.strip().lower().startswith(
-            ("<!doctype html", "<html")
+        if (
+            not result
+            and content.strip().lower().startswith(
+                ("<!doctype html", "<html")
+            )
         ):
             log("[Sunshine] API returned HTML instead of JSON.")
             return False
@@ -1341,7 +752,6 @@ class SunshineClient:
             log("[Sunshine] API reported authentication failure.")
             return False
 
-        log("[Sunshine] Admin API responded successfully.")
         return True
 
     # --------------------------------------------------------
@@ -1350,9 +760,7 @@ class SunshineClient:
 
     def ensure_setup(self):
         if not SUNSHINE_USER or not SUNSHINE_PASSWORD:
-            log(
-                "[Sunshine] SUNSHINE_USER or SUNSHINE_PASSWORD is missing."
-            )
+            log("[Sunshine] SUNSHINE_USER or SUNSHINE_PASSWORD is missing.")
             return False
 
         try:
@@ -1390,12 +798,8 @@ class SunshineClient:
             )
             return False
 
-        log("[Sunshine] Setup/authentication completed successfully.")
+        log("[Sunshine] Setup and authentication completed.")
         return True
-
-    # --------------------------------------------------------
-    # REFRESH PIN PAGE
-    # --------------------------------------------------------
 
     def refresh_pin_page(self):
         status, url, content = self.request(
@@ -1408,22 +812,20 @@ class SunshineClient:
             urllib.parse.urlparse(url).path.rstrip("/").lower()
         )
 
-        if status == 200 and final_path != "/welcome":
-            log(f"[Sunshine] /pin checked successfully: {safe_url(url)}")
-        else:
+        if status != 200 or final_path == "/welcome":
             log(
-                f"[Sunshine] /pin check failed: "
+                f"[Sunshine] PIN page check failed: "
                 f"HTTP {status}; URL={safe_url(url)}"
             )
 
         return status, url, content
 
     # --------------------------------------------------------
-    # PAIRING THROUGH THE ACTUAL BROWSER PAGE
+    # PAIRING
     # --------------------------------------------------------
 
     def pair(self, pin, name):
-        log("[Pairing] Starting pre-flight checks.")
+        log("[Pairing] Running Sunshine availability check.")
 
         status, url, _ = self.refresh_pin_page()
 
@@ -1434,7 +836,7 @@ class SunshineClient:
         if status != 200 or final_path == "/welcome":
             return False, (
                 "Sunshine недоступен на PIN-странице. "
-                "Проверь логи первоначальной настройки."
+                "Проверь первоначальную настройку."
             )
 
         try:
@@ -1448,7 +850,7 @@ class SunshineClient:
 
             return False, (
                 "Ошибка выполнения формы Sunshine. "
-                "Подробности находятся в логах сервера."
+                "Проверь логи Actions."
             )
 
 
@@ -1477,7 +879,11 @@ class PairHandler(http.server.BaseHTTPRequestHandler):
         self.send_header("Cache-Control", "no-store")
         self.send_header("X-Content-Type-Options", "nosniff")
         self.end_headers()
-        self.wfile.write(body)
+
+        try:
+            self.wfile.write(body)
+        except (BrokenPipeError, ConnectionResetError):
+            pass
 
     def do_GET(self):
         if self.path == "/favicon.ico":
@@ -1493,7 +899,10 @@ class PairHandler(http.server.BaseHTTPRequestHandler):
             self.send_error(404)
             return
 
-        page = PAGE.replace("__PANEL_TOKEN__", WEB_TOKEN)
+        # Prevent the token from breaking JavaScript if it contains
+        # characters meaningful in HTML or JavaScript.
+        safe_token = json.dumps(WEB_TOKEN)[1:-1]
+        page = PAGE.replace("__PANEL_TOKEN__", safe_token)
         body = page.encode("utf-8")
 
         self.send_response(200)
@@ -1505,14 +914,16 @@ class PairHandler(http.server.BaseHTTPRequestHandler):
         self.send_header("Cache-Control", "no-store")
         self.send_header("X-Content-Type-Options", "nosniff")
         self.end_headers()
-        self.wfile.write(body)
+
+        try:
+            self.wfile.write(body)
+        except (BrokenPipeError, ConnectionResetError):
+            pass
 
     def do_POST(self):
         if self.path != "/api/pair":
             self.send_error(404)
             return
-
-        log("[Panel] Incoming pairing request.")
 
         if not WEB_TOKEN:
             self.send_json(503, {
@@ -1545,11 +956,8 @@ class PairHandler(http.server.BaseHTTPRequestHandler):
             if not isinstance(payload, dict):
                 raise ValueError("JSON object required")
 
-        except Exception as error:
-            log(
-                f"[Panel] Invalid request body: "
-                f"{type(error).__name__}: {error}"
-            )
+        except Exception:
+            log("[Panel] Invalid request body.")
 
             self.send_json(400, {
                 "ok": False,
@@ -1560,15 +968,13 @@ class PairHandler(http.server.BaseHTTPRequestHandler):
         pin = str(payload.get("pin", "")).strip()
         name = str(payload.get("name", "")).strip()
 
-        # Never print the PIN.
+        # Never print the submitted PIN or credentials.
         log(
-            f"[Panel] Payload validated structurally: "
+            f"[Panel] Pairing request received; "
             f"PIN length={len(pin)}; name length={len(name)}."
         )
 
         if not re.fullmatch(r"[0-9]{4}", pin):
-            log("[Panel] Request rejected: PIN format is invalid.")
-
             self.send_json(400, {
                 "ok": False,
                 "message": "PIN должен содержать ровно 4 цифры.",
@@ -1576,8 +982,6 @@ class PairHandler(http.server.BaseHTTPRequestHandler):
             return
 
         if not name or len(name) > 100:
-            log("[Panel] Request rejected: invalid device name.")
-
             self.send_json(400, {
                 "ok": False,
                 "message": "Укажи имя устройства до 100 символов.",
@@ -1592,7 +996,7 @@ class PairHandler(http.server.BaseHTTPRequestHandler):
             return
 
         if not PAIR_LOCK.acquire(blocking=False):
-            log("[Panel] Request rejected: another pairing is active.")
+            log("[Panel] Another pairing request is already active.")
 
             self.send_json(409, {
                 "ok": False,
@@ -1603,14 +1007,13 @@ class PairHandler(http.server.BaseHTTPRequestHandler):
         started = time.monotonic()
 
         try:
-            log("[Panel] Pairing lock acquired; starting pairing flow.")
+            log("[Panel] Starting pairing flow.")
 
             ok, message = SUNSHINE.pair(pin, name)
 
             log(
-                f"[Panel] Pairing flow returned ok={ok}; "
-                f"elapsed={time.monotonic() - started:.2f}s; "
-                f"message={message!r}"
+                f"[Panel] Pairing finished: ok={ok}; "
+                f"elapsed={time.monotonic() - started:.2f}s"
             )
 
             self.send_json(200 if ok else 502, {
@@ -1620,20 +1023,22 @@ class PairHandler(http.server.BaseHTTPRequestHandler):
 
         except Exception as error:
             log(
-                f"[Panel] Unhandled pairing error: "
+                f"[Panel] Pairing error: "
                 f"{type(error).__name__}: {error}"
             )
 
             self.send_json(500, {
                 "ok": False,
-                "message": "Внутренняя ошибка pairing. Проверь логи Actions.",
+                "message": (
+                    "Внутренняя ошибка pairing. Проверь логи Actions."
+                ),
             })
 
         finally:
             PAIR_LOCK.release()
-            log("[Panel] Pairing lock released.")
 
     def log_message(self, fmt, *args):
+        # Keep normal HTTP access logs concise.
         log("[PanelHTTP] " + (fmt % args))
 
 
@@ -1652,19 +1057,18 @@ def main():
             "Set PAIR_WEB_TOKEN environment variable."
         )
 
-    log("=" * 60)
+    log("=" * 56)
     log("SUNSHINE MOONLIGHT PAIRING PANEL")
-    log("=" * 60)
-
-    log(f"[Config] Panel bind address: {HOST}:{PORT}")
-    log(f"[Config] Sunshine admin URL: {SUNSHINE_API}/pin")
-    log("[Config] Chromium headless=True")
-    log("[Config] PIN values and credentials will not be logged.")
+    log("=" * 56)
+    log(f"[Config] Panel: http://{HOST}:{PORT}/")
+    log(f"[Config] Sunshine PIN page: {SUNSHINE_API}/pin")
+    log("[Config] Headless Chromium enabled.")
+    log("[Config] PINs and credentials are not logged.")
 
     setup_ok = False
 
     for attempt in range(1, 16):
-        log(f"[Sunshine] Setup/auth check {attempt}/15")
+        log(f"[Sunshine] Setup/authentication check {attempt}/15")
 
         if SUNSHINE.ensure_setup():
             setup_ok = True
@@ -1672,8 +1076,8 @@ def main():
 
         if attempt < 15:
             log(
-                f"[Sunshine] Setup check failed; "
-                f"retrying in {POLL_INTERVAL}s."
+                f"[Sunshine] Check failed; retrying in "
+                f"{POLL_INTERVAL}s."
             )
             time.sleep(POLL_INTERVAL)
 
@@ -1682,19 +1086,19 @@ def main():
 
         raise SystemExit(
             "Sunshine initial setup/authentication failed. "
-            "See the Sunshine and Browser logs above."
+            "Check the preceding logs."
         )
 
     # IMPORTANT:
-    # TCPServer keeps sync_playwright calls on the same thread
-    # where the Playwright instance was created.
+    # Keep TCPServer so synchronous Playwright remains on the same
+    # thread where its instance was created.
     class PairingServer(socketserver.TCPServer):
         allow_reuse_address = True
 
     try:
         with PairingServer((HOST, PORT), PairHandler) as server:
             log(f"[Panel] Listening on http://{HOST}:{PORT}/")
-            log("[Browser] Headless Chromium is ready on Sunshine /pin.")
+            log("[Panel] Ready.")
 
             server.serve_forever()
 
