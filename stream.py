@@ -159,7 +159,7 @@ class SunshineBrowser:
 
         try:
             self.browser = self.playwright.chromium.launch(
-                headless=True,
+                headless=False,
             )
 
             self.context = self.browser.new_context(
