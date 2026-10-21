@@ -1,4 +1,4 @@
-name: Cloud PC test auto
+name: test BEFORE 2025 SERVER
 
 on:
   workflow_dispatch:
