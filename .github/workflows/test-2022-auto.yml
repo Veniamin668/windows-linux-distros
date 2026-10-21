@@ -46,7 +46,7 @@ jobs:
           choco-del: 'true'
           uwp-del: 'true'
           path-clean: 'true'
-          del-installer-user: 'false'
+          del-installer-user: 'true'
           oobe-disable: 'false'
           wsl-rename: 'false'
           npm-del: 'true'
