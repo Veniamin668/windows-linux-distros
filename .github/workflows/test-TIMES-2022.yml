@@ -35,7 +35,7 @@ jobs:
            USE_CUSTOM_USER: 'false'
            CUSTOM_USERNAME: ''
            CUSTOM_PASSWORD: ${{ secrets.CUSTOM_PASSWORD }}
-           HOSTNAME: 'runner-2022'
+           HOSTNAME: 'runner-2022-temp'
            ADVERTISE_TAGS: 'tag:ci'
 
       - name: Debloat windows
