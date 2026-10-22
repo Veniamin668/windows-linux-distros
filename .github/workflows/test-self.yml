@@ -9,8 +9,5 @@ jobs:
     timeout-minutes: 365
 
     steps:
-      - name: Checkout Repository
-        uses: actions/checkout@v4
-
-      - name: Checkout Repository
+      - name: fastfetch
         run: fastfetch
