@@ -5,7 +5,7 @@ on:
   
 jobs:
   test-cloud-pc-auto:
-    runs-on: ktoya-pc
+    runs-on: self-hosted
     timeout-minutes: 365
 
     steps:
