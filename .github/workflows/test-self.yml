@@ -1,0 +1,16 @@
+name: 11 ARM64 test auto
+
+on:
+  workflow_dispatch:
+  
+jobs:
+  test-cloud-pc-auto:
+    runs-on: ktoya-pc
+    timeout-minutes: 365
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Checkout Repository
+        run: fastfetch
