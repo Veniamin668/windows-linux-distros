@@ -2,8 +2,6 @@ name: Heroku Userbot Runner
 
 on:
   workflow_dispatch:
-  schedule:
-    - cron: '59 */5 * * *'
 
 jobs:
   run-bot:
