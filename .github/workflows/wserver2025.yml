@@ -19,6 +19,17 @@ jobs:
 #          remove-haskell: 'true'
 #          remove-codeql: 'true'
 
+      - name: Connect to Tailscale Network
+        uses: tailscale/github-action@v4
+        with:
+          oauth-client-id: ${{ secrets.TAIL_OAUTH_CLIENT_ID }}
+          oauth-secret: ${{ secrets.TAIL_OAUTH }}
+          tags: tag:ci
+          hostname: wserver-2025
+          args: '--advertise-exit-node '
+#          log-mode: 'quiet'
+          version: 'latest'
+          
       - name: Cleanup
         uses: rokibhasansagar/slimhub_actions@main
         
@@ -61,9 +72,9 @@ jobs:
             -e "BOOT_MODE=windows_secure" \
             -e "ARGUMENTS=-cpu Broadwell-noTSX-IBRS,hypervisor=off,vmx=on,mpx=off,hv-time=on,hv-relaxed=on,hv-vapic=on,hv-spinlocks=0x1fff" \
             -e "TPM=Y" \
-            -e "MANUAL=Y" \
+            -e "MANUAL=N" \
             -e "VERSION=2025" \
-            -e "RAM_SIZE=12G" \
+            -e "RAM_SIZE=13G" \
             -e "CPU_CORES=3" \
             -p 8006:8006 \
             -v "${PWD:-.}/windows:/storage" \
@@ -87,7 +98,7 @@ jobs:
           bore local 22222 --to bore.pub &
           
           # Запускаем Cloudflare туннель без проверки TLS
-          cloudflared tunnel --no-tls-verify --url http://localhost:8006 &
+          #cloudflared tunnel --no-tls-verify --url http://localhost:8006 &
           
           # Железобетонный вечный затык
           tail -f /dev/null
