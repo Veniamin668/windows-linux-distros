@@ -36,7 +36,7 @@ jobs:
            USE_CUSTOM_USER: 'false'
            CUSTOM_USERNAME: ''
            CUSTOM_PASSWORD: ${{ secrets.CUSTOM_PASSWORD }}
-           HOSTNAME: 'runner-arm64'
+           HOSTNAME: 'runner-arm64-bloat'
            ADVERTISE_TAGS: 'tag:ci'
            
       - name: Purge Windows Bloat
@@ -46,7 +46,7 @@ jobs:
           azure-del: 'false'
           choco-del: 'false'
           uwp-del: 'false'
-          path-clean: 'true'
+          path-clean: 'false'
           del-installer-user: 'false'
           oobe-disable: 'true'
           npm-del: 'false'
