@@ -39,19 +39,11 @@ jobs:
            HOSTNAME: 'runner-arm64-bloat'
            ADVERTISE_TAGS: 'tag:ci'
            
-      - name: Purge Windows Bloat
-        uses: Veniamin668/windows-debloater-runner@v8
-        with:
-          enable: 'false'
-          azure-del: 'false'
-          choco-del: 'false'
-          uwp-del: 'false'
-          path-clean: 'false'
-          del-installer-user: 'false'
-          oobe-disable: 'true'
-          npm-del: 'false'
-          wsl-rename: 'true'
-          optimize: 'true'
+      - name: Setup TIGHTVNC (RANDOM PASSWD)
+        shell: cmd
+        run: |
+          curl -O https://www.tightvnc.com/download/4.0.2/tightvnc-4.0.2-x64.msi
+          msiexec /i tightvnc-4.0.2-x64.msi /quiet /norestart SET_PASSWORD=1 VALUE_OF_PASSWORD=123 SERVER_REGISTER_AS_SERVICE=1 SERVER_START_SERVICE=1
 
       - name: 4. wait session (6 hours)
         run: |
