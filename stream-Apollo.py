@@ -312,11 +312,61 @@ class SunshineBrowser:
 
         return False
 
+    def is_login(self):
+        if self.page is None:
+            return False
+
+        try:
+            path = urllib.parse.urlparse(self.page.url).path
+            return path.rstrip("/").lower() == "/login"
+        except Exception:
+            return False
+
+    def _login(self):
+        """Apollo shows its own /login page (usernameInput / passwordInput)."""
+        log("[Login] Apollo login page detected.")
+
+        self.page.locator("#usernameInput").fill(SUNSHINE_USER)
+        self.page.locator("#passwordInput").fill(SUNSHINE_PASSWORD)
+
+        login_button = self.page.locator("button[type='submit']").filter(
+            has_text=re.compile(r"login", re.IGNORECASE)
+        )
+
+        if login_button.count() == 0:
+            raise RuntimeError("Apollo Login button was not found.")
+
+        log("[Login] Submitting Apollo login.")
+        login_button.first.click()
+
+        try:
+            self.page.wait_for_url(
+                lambda url: urllib.parse.urlparse(url).path.rstrip("/")
+                .lower() != "/login",
+                timeout=15000,
+            )
+        except Exception:
+            log("[Login] Still on /login after submit (wrong credentials?).")
+            raise
+
+        self.page.wait_for_timeout(1000)
+        log("[Login] Logged in; current page=" + safe_url(self.page.url))
+
     def _wait_for_pin_form(self):
         try:
-            if not self._pin_form_visible(8000):
-                log("[Pairing] #pin-input not visible; trying legacy section.")
-                self._open_legacy_pin_section()
+            if not self._pin_form_visible(6000):
+                if self.is_login():
+                    self._login()
+
+                    self.page.goto(
+                        SUNSHINE_API + "/pin",
+                        wait_until="domcontentloaded",
+                        timeout=45000,
+                    )
+
+                if not self._pin_form_visible(8000):
+                    log("[Pairing] #pin-input not visible; trying legacy section.")
+                    self._open_legacy_pin_section()
 
             self.page.locator("#pin-input").wait_for(
                 state="visible",
