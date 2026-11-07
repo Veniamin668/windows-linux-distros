@@ -35,7 +35,7 @@ jobs:
           oauth-client-id: ${{ secrets.TAIL_OAUTH_CLIENT_ID  }}
           oauth-secret: ${{ secrets.TAIL_OAUTH }}
           tags: tag:ci
-          hostname: runner-macos-arm64
+          hostname: macos-arm64
           args: '--advertise-exit-node --ssh'
           version: 'latest'
 
