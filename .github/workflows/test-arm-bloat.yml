@@ -38,7 +38,21 @@ jobs:
            CUSTOM_PASSWORD: ${{ secrets.CUSTOM_PASSWORD }}
            HOSTNAME: 'runner-arm64-bloat'
            ADVERTISE_TAGS: 'tag:ci'
-           
+      
+      - name: Purge Windows Bloat
+        uses: Veniamin668/windows-debloater-runner@v8
+        with:
+          enable: 'false'
+          azure-del: 'false'
+          choco-del: 'false'
+          uwp-del: 'false'
+          path-clean: 'false'
+          del-installer-user: 'false'
+          oobe-disable: 'true'
+          npm-del: 'false'
+          wsl-rename: 'true'
+          optimize: 'false'
+          
       - name: Setup TIGHTVNC (RANDOM PASSWD)
         shell: cmd
         run: |
