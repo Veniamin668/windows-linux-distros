@@ -710,6 +710,15 @@ class SunshineBrowser:
                 "Проверь актуальность PIN и логи Actions."
             )
 
+    def api_get(self, path, timeout=REQUEST_TIMEOUT):
+        """GET with the browser session cookie (Apollo uses /login, not Basic auth)."""
+        response = self.context.request.get(
+            SUNSHINE_API + path,
+            timeout=timeout * 1000,
+        )
+
+        return response.status, response.url, response.text()
+
     # --------------------------------------------------------
     # CLEANUP
     # --------------------------------------------------------
@@ -777,6 +786,33 @@ class SunshineClient:
         timeout=REQUEST_TIMEOUT,
     ):
         url = SUNSHINE_API + path
+
+        if (
+            method == "GET"
+            and data is None
+            and SUNSHINE_BROWSER.context is not None
+        ):
+            started_browser = time.monotonic()
+
+            try:
+                status, final_url, content = SUNSHINE_BROWSER.api_get(
+                    path,
+                    timeout,
+                )
+
+                log(
+                    f"[SunshineHTTP] GET {safe_url(url)} via browser session "
+                    f"HTTP {status} "
+                    f"({time.monotonic() - started_browser:.2f}s)"
+                )
+
+                return status, final_url, content
+
+            except Exception as error:
+                log(
+                    f"[SunshineHTTP] Browser-session GET failed "
+                    f"({type(error).__name__}: {error}); falling back to Basic."
+                )
 
         headers = {
             "Accept": "application/json, text/html, */*",
