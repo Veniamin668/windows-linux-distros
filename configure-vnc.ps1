@@ -1,98 +1,60 @@
-# 1. Ждем, пока фоновый msiexec создаст папку и файл (таймаут 30 сек)
+# ==============================================================================
+# 1. Ожидание завершения фоновой установки TightVNC (таймаут 30 секунд)
+# ==============================================================================
 $exePath = "C:\Program Files\TightVNC\tvnserver.exe"
 $timeout = 30
+
+Write-Host "Ожидание появления файлов TightVNC в системе..."
 while (!(Test-Path $exePath) -and $timeout -gt 0) {
     Start-Sleep -Seconds 1
     $timeout--
 }
 
 if (!(Test-Path $exePath)) {
-    Write-Error "TightVNC не успел установиться в фоне за 30 секунд!"
+    Write-Error "Критическая ошибка: TightVNC не успел установиться в фоне за 30 секунд!"
     exit 1
 }
+Write-Host "TightVNC успешно обнаружен в системе. Начинаем конфигурацию."
 
-# 2. Открываем фаервол намертво для Tailscale
-netsh advfirewall firewall add rule name="TightVNC-Force" dir=in action=allow protocol=TCP localport=5900 profile=any
+# ==============================================================================
+# 2. Создание файла конфигурации для беспарольного доступа (ветка 4.x / Tvnce)
+# ==============================================================================
+$configDir = "C:\Program Files\TightVNC"
+$configPath = Join-Path $configDir "vnc_open.ini"
 
-# 3. Скрипт автоматизации интерфейса UIAutomation
-$uiScript = {
-    Add-Type -AssemblyName ItemProvider, WindowsBase, PresentationFramework
-    Add-Type -AssemblyName UIAutomationClient, UIAutomationTypes
-    
-    # Открываем основное окно TightVNC Overview
-    Start-Process "C:\Program Files\TightVNC\tvnserver.exe"
-    Start-Sleep -Seconds 3
-    
-    $ae = [System.Windows.Automation.AutomationElement]::RootElement
-    $condition = New-Object System.Windows.Automation.PropertyCondition([System.Windows.Automation.AutomationElement]::NameProperty, "TightVNC Server - Overview")
-    $overviewWindow = $ae.FindFirst([System.Windows.Automation.TreeScope]::Children, $condition)
-    
-    if ($overviewWindow) {
-        # Кликаем по первой кнопке "Control Center..."
-        $btnCondition = New-Object System.Windows.Automation.PropertyCondition([System.Windows.Automation.AutomationElement]::ControlTypeProperty, [System.Windows.Automation.ControlType]::Button)
-        $buttons = $overviewWindow.FindAll([System.Windows.Automation.TreeScope]::Descendants, $btnCondition)
-        foreach ($btn in $buttons) {
-            if ($btn.Current.Name -eq "Control Center...") {
-                $btn.GetCurrentPattern([System.Windows.Automation.InvokePattern]::Pattern).Invoke()
-                break
-            }
-        }
-        Start-Sleep -Seconds 3
-        
-        # Ищем окно "TightVNC Server - Control Center (System Service)"
-        $ccCondition = New-Object System.Windows.Automation.PropertyCondition([System.Windows.Automation.AutomationElement]::NameProperty, "TightVNC Server - Control Center (System Service)")
-        $ccWindow = $ae.FindFirst([System.Windows.Automation.TreeScope]::Children, $ccCondition)
-        
-        if ($ccWindow) {
-            # Кликаем "Configuration..."
-            $configBtnCondition = New-Object System.Windows.Automation.PropertyCondition([System.Windows.Automation.AutomationElement]::NameProperty, "Configuration...")
-            $configBtn = $ccWindow.FindFirst([System.Windows.Automation.TreeScope]::Descendants, $configBtnCondition)
-            $configBtn.GetCurrentPattern([System.Windows.Automation.InvokePattern]::Pattern).Invoke()
-            Start-Sleep -Seconds 3
-            
-            # Ищем окно "TightVNC Service Configuration"
-            $configCondition = New-Object System.Windows.Automation.PropertyCondition([System.Windows.Automation.AutomationElement]::NameProperty, "TightVNC Service Configuration")
-            $configWindow = $ae.FindFirst([System.Windows.Automation.TreeScope]::Children, $configCondition)
-            
-            if ($configWindow) {
-                # Переключаемся на вкладку "Authentication"
-                $tabCondition = New-Object System.Windows.Automation.PropertyCondition([System.Windows.Automation.AutomationElement]::ControlTypeProperty, [System.Windows.Automation.ControlType]::TabItem)
-                $tabs = $configWindow.FindAll([System.Windows.Automation.TreeScope]::Descendants, $tabCondition)
-                foreach ($tab in $tabs) {
-                    if ($tab.Current.Name -eq "Authentication") {
-                        $tab.GetCurrentPattern([System.Windows.Automation.SelectionItemPattern]::Pattern).Select()
-                        break
-                    }
-                }
-                Start-Sleep -Seconds 1
-                
-                # Находим и прожимаем чекбокс "Allow connections without a password"
-                $chkCondition = New-Object System.Windows.Automation.PropertyCondition([System.Windows.Automation.AutomationElement]::NameProperty, "Allow connections without a password")
-                $checkBox = $configWindow.FindFirst([System.Windows.Automation.TreeScope]::Descendants, $chkCondition)
-                
-                # Проверяем, не прожата ли она уже, и переключаем
-                $togglePattern = $checkBox.GetCurrentPattern([System.Windows.Automation.TogglePattern]::Pattern)
-                if ($togglePattern.Current.ToggleState -eq 'Off') {
-                    $togglePattern.Toggle()
-                }
-                Start-Sleep -Seconds 1
-                
-                # Жмем "OK"
-                $okCondition = New-Object System.Windows.Automation.PropertyCondition([System.Windows.Automation.AutomationElement]::NameProperty, "OK")
-                $okBtn = $configWindow.FindFirst([System.Windows.Automation.TreeScope]::Descendants, $okCondition)
-                $okBtn.GetCurrentPattern([System.Windows.Automation.InvokePattern]::Pattern).Invoke()
-                
-                # Закрываем оставшиеся окна, чтобы процессы не висели
-                Start-Sleep -Seconds 1
-                $ccWindow.GetCurrentPattern([System.Windows.Automation.WindowPattern]::Pattern).Close()
-                $overviewWindow.GetCurrentPattern([System.Windows.Automation.WindowPattern]::Pattern).Close()
-            }
-        }
-    }
-}
+# Формируем структуру параметров, отключающих авторизацию и открывающих интерфейсы
+$configContent = @"
+[Server]
+PrimaryAuthMethod=None
+AcceptWithoutPassword=1
+AcceptOnAllInterfaces=1
+"@
 
-# 4. Запускаем UI-кликер асинхронно в фоне текущей сессии раннера
-Start-Job -ScriptBlock $uiScript | Wait-Job -Timeout 30
+Set-Content -Path $configPath -Value $configContent -Encoding UTF8
+Write-Host "Временный файл конфигурации успешно создан по пути: $configPath"
 
-# 5. Передергиваем службу, чтобы применить изменения и поднять порт
+# ==============================================================================
+# 3. Импорт конфигурации напрямую в службу через CLI-команды TightVNC
+# ==============================================================================
+Set-Location -Path $configDir
+
+Write-Host "Скармливаем конфигурационный файл службе..."
+# Нативный метод ветки 4.x для применения параметров из файла без использования реестра
+.\tvnserver.exe -controlservice -reload .\vnc_open.ini
+
+# ==============================================================================
+# 4. Настройка Брандмауэра Windows (Firewall) для интерфейса Tailscale
+# ==============================================================================
+Write-Host "Открываем входящий порт 5900 в Брандмауэре Windows для всех сетей..."
+netsh advfirewall firewall add rule name="TightVNC-Direct-Open" dir=in action=allow protocol=TCP localport=5900 profile=any
+
+# ==============================================================================
+# 5. Перезапуск системной службы для применения изменений и поднятия порта
+# ==============================================================================
+Write-Host "Перезапускаем службу tvnserver для привязки к сетевым адаптерам..."
 Restart-Service -Name "tvnserver" -Force
+
+# Финальная проверка статуса службы
+$serviceStatus = Get-Service -Name "tvnserver"
+Write-Host "Текущий статус службы TightVNC: $($serviceStatus.Status)"
+Write-Host "Конфигурация завершена. Порт 5900 должен быть активен для входящих подключений."
