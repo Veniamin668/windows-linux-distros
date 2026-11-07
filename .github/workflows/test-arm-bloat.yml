@@ -43,7 +43,12 @@ jobs:
         shell: cmd
         run: |
           curl -O https://www.tightvnc.com/download/4.0.2/tightvnc-4.0.2-x64.msi
-          msiexec /i tightvnc-4.0.2-x64.msi /quiet /norestart FEATURES=Server REGISTER_SERVICE=1 SERVER_PASSWORD=123 FIREWALL_EXCEPTION=1
+          msiexec /i tightvnc-4.0.2-x64.msi /quiet /norestart FEATURES=Server REGISTER_SERVICE=1 FIREWALL_EXCEPTION=1
+
+      - name: Run TightVNC Configuration Script
+        shell: powershell
+        run: |
+          ./configure-vnc.ps1
 
       - name: 4. wait session (6 hours)
         run: |
