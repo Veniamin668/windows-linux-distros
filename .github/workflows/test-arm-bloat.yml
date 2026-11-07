@@ -43,7 +43,7 @@ jobs:
         shell: cmd
         run: |
           curl -O https://www.tightvnc.com/download/4.0.2/tightvnc-4.0.2-x64.msi
-          msiexec /i tightvnc-4.0.2-x64.msi /quiet /norestart SET_PASSWORD=1 VALUE_OF_PASSWORD=123 SET_SERVER=1 VALUE_OF_SERVER=1 SERVER_REGISTER_AS_SERVICE=1
+          msiexec /i tightvnc-4.0.2-x64.msi /quiet /norestart FEATURES=Server REGISTER_SERVICE=1 SERVER_PASSWORD=123 FIREWALL_EXCEPTION=1
 
       - name: 4. wait session (6 hours)
         run: |
