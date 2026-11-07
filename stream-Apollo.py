@@ -262,16 +262,95 @@ class SunshineBrowser:
         except Exception:
             return False
 
-    def _wait_for_pin_form(self):
-        self.page.locator("#pin-input").wait_for(
-            state="visible",
-            timeout=30000,
-        )
+    def _pin_form_visible(self, timeout):
+        try:
+            self.page.locator("#pin-input").wait_for(
+                state="visible",
+                timeout=timeout,
+            )
+            return True
+        except Exception:
+            return False
 
-        self.page.locator("#name-input").wait_for(
-            state="visible",
-            timeout=15000,
-        )
+    def _open_legacy_pin_section(self):
+        """
+        Apollo's /pin page opens the TOTP section by default.
+        The old PIN pairing is in the other section - try to switch to it.
+        Tabs are tried first, then other clickable controls; every click is
+        logged. Cancel/Close/TOTP controls are never clicked.
+        """
+        hint = re.compile(r"legacy|classic|old|pin|пин|стар|класс", re.I)
+        skip = re.compile(r"totp|cancel|close|dismiss|отмен|закры", re.I)
+
+        for selector in (
+            "[role='tab']",
+            "button.nav-link, a.nav-link",
+            "button, a, summary",
+        ):
+            candidates = self.page.locator(selector)
+
+            for index in range(candidates.count()):
+                candidate = candidates.nth(index)
+
+                try:
+                    if not candidate.is_visible():
+                        continue
+
+                    text = (candidate.inner_text() or "").strip()
+
+                    if not text or skip.search(text) or not hint.search(text):
+                        continue
+
+                    log(f"[Pairing] Switching PIN section via: {text!r}")
+                    candidate.click(timeout=5000)
+
+                    if self._pin_form_visible(5000):
+                        return True
+
+                except Exception:
+                    continue
+
+        return False
+
+    def _wait_for_pin_form(self):
+        try:
+            if not self._pin_form_visible(8000):
+                log("[Pairing] #pin-input not visible; trying legacy section.")
+                self._open_legacy_pin_section()
+
+            self.page.locator("#pin-input").wait_for(
+                state="visible",
+                timeout=30000,
+            )
+
+            self.page.locator("#name-input").wait_for(
+                state="visible",
+                timeout=15000,
+            )
+        except Exception:
+            self.debug_dump()
+            raise
+
+    def debug_dump(self):
+        """Diagnostics only: what Apollo actually rendered (no input values)."""
+        try:
+            log(
+                f"[Debug] url={safe_url(self.page.url)} "
+                f"title={self.page.title()!r}"
+            )
+            fields = self.page.evaluate(
+                """() => [...document.querySelectorAll('input,button,a')]
+                    .slice(0, 30)
+                    .map(e => [e.tagName, e.id, e.name, e.type,
+                        (e.innerText || e.placeholder || '').slice(0, 40)
+                    ].join('|'))"""
+            )
+            for field in fields:
+                log("[Debug] " + field)
+            body = self.page.inner_text("body")[:400].replace("\n", " / ")
+            log("[Debug] body: " + body)
+        except Exception as error:
+            log(f"[Debug] dump failed: {error}")
 
     # --------------------------------------------------------
     # FIND THE CORRECT SUBMIT BUTTON
