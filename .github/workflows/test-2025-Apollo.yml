@@ -1,0 +1,221 @@
+name: Server 2025 Apollo test
+
+on:
+  workflow_dispatch:
+
+jobs:
+  test-cloud-pc-auto:
+    runs-on: windows-2025
+    timeout-minutes: 369
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+
+#      - name: configure Pagefile
+#        uses: al-cheb/configure-pagefile-action@v1.2
+#        with:
+#          minimum-size: 4GB
+#          maximum-size: 4GB
+#          disk-root: "D:"
+
+#      - name: Setup RAM Disk
+#        uses: chad-golden/setup-ramdisk@main
+#        with:
+#          size-in-mb: 4096    # Optional: Default is 2048
+#          drive-letter: 'R'   # Optional: Default is R
+#          copy-workspace: false # Optional: Default is false
+
+      - name: Run Win RDP Enabler
+        uses: Veniamin668/win-rdp-enabler@x64-oauth
+        with:
+           OAUTH_KEY: ${{ secrets.TAIL_OAUTH }}
+#           TAIL_KEY: ${{ secrets.TAIL_KEY }}
+           ADMIN_PASS: ${{ secrets.ADMIN_PASS }}
+           USE_CUSTOM_USER: 'false'
+           CUSTOM_USERNAME: ''
+           CUSTOM_PASSWORD: ${{ secrets.CUSTOM_PASSWORD }}
+           HOSTNAME: 'runner-2025'
+           ADVERTISE_TAGS: 'tag:ci'
+
+      - name: Install Playwright
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          if (-not (Get-Command python -ErrorAction SilentlyContinue)) { throw "python not found in PATH after debloat" }
+          python -m pip install playwright
+          if ($LASTEXITCODE -ne 0) { throw "pip install playwright failed" }
+          python -m playwright install chromium
+          if ($LASTEXITCODE -ne 0) { throw "playwright install chromium failed" }
+
+      - name: install Apollo
+        shell: pwsh
+        run: |
+          choco install apollo -y --no-progress
+          if ($LASTEXITCODE -ne 0) { throw "choco install apollo failed: $LASTEXITCODE" }
+
+          $dir = "$env:ProgramFiles\Apollo"
+          Get-ChildItem $dir | Select-Object Name
+          Get-Service | Where-Object { $_.Name -match 'Apollo|Sunshine' } | Format-Table Name, Status
+
+      - name: Ensure Apollo is running
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+
+          function Wait-Port([int]$Port, [int]$Seconds) {
+            $end = (Get-Date).AddSeconds($Seconds)
+            while ((Get-Date) -lt $end) {
+              try {
+                $c = New-Object System.Net.Sockets.TcpClient
+                $c.Connect('127.0.0.1', $Port)
+                $c.Close()
+                return $true
+              } catch { Start-Sleep -Seconds 2 }
+            }
+            return $false
+          }
+
+          $dir = "$env:ProgramFiles\Apollo"
+          $exe = Get-ChildItem $dir -Filter *.exe -Recurse -ErrorAction SilentlyContinue |
+                 Where-Object { $_.Name -match '^(sunshine|apollo)\.exe$' } |
+                 Select-Object -First 1
+          if (-not $exe) {
+            Get-ChildItem $dir -Recurse -Filter *.exe | Select-Object -First 30 FullName
+            throw "Apollo executable not found in $dir"
+          }
+          Write-Host "Apollo exe: $($exe.FullName)"
+
+          # 1) Служба
+          $svc = Get-Service | Where-Object { $_.Name -match 'Apollo|Sunshine' } | Select-Object -First 1
+          if ($svc) {
+            Write-Host "Service: $($svc.Name) = $($svc.Status)"
+            if ($svc.Status -ne 'Running') { Start-Service -Name $svc.Name }
+          } else {
+            Write-Host "No Apollo/Sunshine service found."
+          }
+
+          # 2) Если веб-интерфейс не поднялся — запускаем exe напрямую
+          if (-not (Wait-Port 47990 40)) {
+            Write-Host "Web UI (47990) is down — launching Apollo manually."
+            Start-Process -FilePath $exe.FullName -WorkingDirectory $exe.DirectoryName -WindowStyle Hidden
+            if (-not (Wait-Port 47990 60)) {
+              $log = Join-Path $exe.DirectoryName 'config\sunshine.log'
+              if (Test-Path $log) { Get-Content $log -Tail 60 }
+              throw "Apollo did not open port 47990."
+            }
+          }
+          Write-Host "Apollo is up (port 47990)."
+
+      - name: Start pairing panel
+        shell: pwsh
+        env:
+          APOLLO_USER: ktoya
+          APOLLO_PASSWORD: ${{ secrets.ADMIN_PASS }}
+          PAIR_WEB_TOKEN: ${{ secrets.ADMIN_PASS }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+
+          function Wait-Port([int]$Port, [int]$Seconds) {
+            $end = (Get-Date).AddSeconds($Seconds)
+            while ((Get-Date) -lt $end) {
+              try {
+                $c = New-Object System.Net.Sockets.TcpClient
+                $c.Connect('127.0.0.1', $Port)
+                $c.Close()
+                return $true
+              } catch { Start-Sleep -Seconds 2 }
+            }
+            return $false
+          }
+
+          $py     = (Get-Command python).Source
+          $script = Join-Path $env:GITHUB_WORKSPACE 'stream-Apollo.py'
+          "PANEL_PY=$py" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          $out    = Join-Path $env:RUNNER_TEMP 'panel.out.log'
+          $err    = Join-Path $env:RUNNER_TEMP 'panel.err.log'
+
+          Start-Process -FilePath $py -ArgumentList "`"$script`"" `
+            -WorkingDirectory $env:GITHUB_WORKSPACE `
+            -RedirectStandardOutput $out -RedirectStandardError $err -WindowStyle Hidden
+
+          if (-not (Wait-Port 5902 90)) {
+            Write-Host "---- panel stdout ----"; if (Test-Path $out) { Get-Content $out -Tail 60 }
+            Write-Host "---- panel stderr ----"; if (Test-Path $err) { Get-Content $err -Tail 60 }
+            throw "Pairing panel did not start on port 5902."
+          }
+
+          Write-Host "---- panel log (first lines) ----"
+          if (Test-Path $out) { Get-Content $out -Tail 15 }
+
+          $ts = Get-Command tailscale -ErrorAction SilentlyContinue
+          $tsExe = if ($ts) { $ts.Source } else { "$env:ProgramFiles\Tailscale\tailscale.exe" }
+          $ip = try { (& $tsExe ip -4 | Select-Object -First 1) } catch { $null }
+          if (-not $ip) { $ip = "n/a" }
+
+          Write-Host "======================================================================"
+          Write-Host " APOLLO COMPLETED! Open the following address in your browser:"
+          Write-Host " http://$($ip):5902/"
+          Write-Host "======================================================================"
+
+      - name: Purge Windows Bloat
+        uses: Veniamin668/windows-debloater-runner@v8
+        with:
+          enable: 'true'
+          azure-del: 'true'
+          choco-del: 'true'
+          uwp-del: 'false'
+          path-clean: 'true'
+          del-installer-user: 'false'
+          oobe-disable: 'false'
+          npm-del: 'true'
+          wsl-rename: 'false'
+          optimize: 'true'
+
+      - name: 4. wait session (6 hours)
+        shell: pwsh
+        env:
+          APOLLO_USER: ktoya
+          APOLLO_PASSWORD: ${{ secrets.ADMIN_PASS }}
+          PAIR_WEB_TOKEN: ${{ secrets.ADMIN_PASS }}
+        run: |
+          Write-Host "Cloud PC дрочилка запущена и ждет тебя в сети! Не закрывай этот воркфлоу."
+
+          $py     = if ($env:PANEL_PY) { $env:PANEL_PY } else { (Get-Command python).Source }
+          $script = Join-Path $env:GITHUB_WORKSPACE 'stream-Apollo.py'
+          $out    = Join-Path $env:RUNNER_TEMP 'panel.out.log'
+          $err    = Join-Path $env:RUNNER_TEMP 'panel.err.log'
+
+          function Test-Port([int]$Port) {
+            try {
+              $c = New-Object System.Net.Sockets.TcpClient
+              $c.Connect('127.0.0.1', $Port)
+              $c.Close()
+              return $true
+            } catch { return $false }
+          }
+
+          while ($true) {
+              Start-Sleep -Seconds 60
+
+              # watchdog: панель
+              if (-not (Test-Port 5902)) {
+                Write-Host "[watchdog] panel is down — restarting."
+                Start-Process -FilePath $py -ArgumentList "`"$script`"" `
+                  -WorkingDirectory $env:GITHUB_WORKSPACE `
+                  -RedirectStandardOutput $out -RedirectStandardError $err -WindowStyle Hidden
+              }
+
+              # watchdog: Apollo
+              if (-not (Test-Port 47990)) {
+                Write-Host "[watchdog] Apollo web UI is down."
+                $svc = Get-Service | Where-Object { $_.Name -match 'Apollo|Sunshine' } | Select-Object -First 1
+                if ($svc -and $svc.Status -ne 'Running') { Start-Service -Name $svc.Name }
+              }
+          }
+
+#      - name: Dismount RAM Disk
+#        uses: chad-golden/setup-ramdisk/dismount@main
+#        with:
+#          drive-letter: 'R'   # Optional: Default is R
