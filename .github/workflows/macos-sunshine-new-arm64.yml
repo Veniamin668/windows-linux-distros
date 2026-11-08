@@ -133,6 +133,10 @@ jobs:
           cat << 'EOF' > /Users/runner/.config/sunshine/sunshine.conf
           origin_web_ui_allowed = lan
           min_log_level = info
+          
+          vt_software = auto
+          vt_realtime = enabled
+          vt_coder = auto
           EOF
           sudo chown -R runner:staff /Users/runner/.config/sunshine
 
