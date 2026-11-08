@@ -118,6 +118,7 @@ jobs:
           sudo cp -R /tmp/sunshine_mount/Sunshine.app /Applications/
           #sudo hdiutil detach /tmp/sunshine_mount > /dev/null 2>&1
           sudo diskutil eject /tmp/sunshine_mount > /dev/null 2>&1
+          exit 0
           
           # 3. Полная точечная зачистка портов перед стартом
           echo " >> Cleaning up ports 47989, 47990 and 5902..."
