@@ -99,6 +99,7 @@ jobs:
             python3 -m playwright install chromium
     
       - name: 2.1. Deploy Ultra-Fast Sunshine Host Server & Auto-PIN API
+        continue-on-error: true
         env:
           SUNSHINE_USER: ktoya
           SUNSHINE_PASSWORD: ${{ secrets.ADMIN_PASS }}
@@ -115,12 +116,9 @@ jobs:
           echo " >> Installing Sunshine App into system..."
           #sudo hdiutil attach /tmp/sunshine.dmg -nobrowse -mountpoint /tmp/sunshine_mount > /dev/null 2>&1
           sudo diskutil image attach /tmp/sunshine.dmg --mountOptions nobrowse --mountPoint /tmp/sunshine_mount > /dev/null 2>&1
-          exit 0
           sudo cp -R /tmp/sunshine_mount/Sunshine.app /Applications/
-          exit 0
           #sudo hdiutil detach /tmp/sunshine_mount > /dev/null 2>&1
           sudo diskutil eject /tmp/sunshine_mount > /dev/null 2>&1
-          exit 0
           
           # 3. Полная точечная зачистка портов перед стартом
           echo " >> Cleaning up ports 47989, 47990 and 5902..."
