@@ -93,22 +93,22 @@ jobs:
           sudo launchctl list | grep sshd || true
 
       - name: 2.1. Deploy Parsec Host Server & Generate Connect Link
-        env:
-          PARSEC_TEAM_ID: "" # Заполни, если используешь Parsec for Teams / Enterprise, иначе оставь пустым
         run: |
           echo "======================================================================"
           echo "            DEPLOYING PARSEC HOST SERVER & GENERATING LINK            "
           echo "======================================================================"
           
-          # 1. Устанавливаем Parsec через Homebrew CLI
           echo " >> Installing Parsec App via Homebrew..."
           brew install --cask parsec > /dev/null 2>&1
 
-          # 2. Генерируем конфигурацию для жесткой привязки к Tailscale IP
+          echo " >> Creating Parsec configuration directory..."
+          # Жестко создаем папку заранее, чтобы grep и Parsec не воевали за тайминги
+          sudo launchctl asuser 501 mkdir -p /Users/runner/.parsec
+          sudo chown -R runner:staff /Users/runner/.parsec
+
           echo " >> Configuring Parsec to use Tailscale network..."
           TS_IP=$(tailscale ip -4 2>/dev/null || echo "127.0.0.1")
           
-          sudo launchctl asuser 501 mkdir -p /Users/runner/.parsec
           sudo launchctl asuser 501 tee /Users/runner/.parsec/config.txt << EOF > /dev/null
           app_lan_address = $TS_IP
           app_network = 1
@@ -116,20 +116,24 @@ jobs:
           host_enabled = 1
           EOF
           
-          # 3. Чистый фоновый запуск Parsec в графической сессии раннера (пользователь 501)
           echo " >> Launching Parsec daemon in background..."
           sudo launchctl asuser 501 /Applications/Parsec.app/Contents/MacOS/parsecd > /dev/null 2>&1 &
           
-          # Даем Parsec 7 секунд на инициализацию и генерацию инвайт-ссылки
-          sleep 7
-
-          # 4. Достаем динамическую ссылку для гостевого подключения (Invite Link)
-          # Логика Parsec генерирует одноразовую ссылку, которую мы парсим из лога
+          echo " >> Waiting for Parsec to initialize logs..."
+          # Цикл ожидания: ждем до 15 секунд, пока Parsec физически создаст файл лога
           PARSEC_LOG="/Users/runner/.parsec/log.txt"
-          
+          for i in {1..15}; do
+            if [ -f "$PARSEC_LOG" ]; then
+              echo " >> Log file found!"
+              break
+            fi
+            sleep 1
+          done
+
+          # Небольшая пауза, чтобы Parsec успел сгенерировать ID внутри лога
+          sleep 5
+
           echo " >> Searching for connection link in Parsec logs..."
-          # Если Parsec запущен через аккаунт, он создаст инвайт-ссылку. 
-          # Если аккаунта в конфиге нет, можно подключаться по Peer ID. Достаем Peer ID:
           PEER_ID=$(grep -oE "peer_id=[0-9]+" $PARSEC_LOG | head -n 1 | cut -d'=' -f2 || true)
           
           echo "======================================================================"
@@ -139,13 +143,15 @@ jobs:
             echo " Your Tailscale PC IP: $TS_IP"
             echo " Your Parsec Peer ID: $PEER_ID"
             echo " "
-            echo " Кликните по этой ссылке или откройте в терминале своего Mac:"
-            echo " open parsec://peer_id=$PEER_ID"
+            echo " Кликните по этой ссылке или откройте в терминале Windows (Win+R):"
+            echo " parsec://peer_id=$PEER_ID"
           else
-            echo " Проверьте логи ниже, если автоматическая ссылка не сгенерировалась."
-            echo " Скорее всего, вам нужно использовать Peer ID из вкладки Computers."
+            echo " Ошибка: Peer ID не найден в логе."
+            echo " Вот последние строки лога Parsec для диагностики:"
+            tail -n 20 $PARSEC_LOG || true
           fi
           echo "======================================================================"
+
 
       - name: 3. Wait session (6 hours)
         run: |
