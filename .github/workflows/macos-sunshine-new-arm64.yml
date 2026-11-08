@@ -113,9 +113,9 @@ jobs:
 
           # 2. Монтируем DMG образ и копируем приложение в /Applications
           echo " >> Installing Sunshine App into system..."
-          sudo hdiutil attach /tmp/sunshine.dmg -nobrowse -mountpoint /tmp/sunshine_mount > /dev/null 2>&1
+          sudo hdiutil attach /tmp/sunshine.dmg -nobrowse -mountpoint /tmp/sunshine_mount
           sudo cp -R /tmp/sunshine_mount/Sunshine.app /Applications/
-          sudo hdiutil detach /tmp/sunshine_mount > /dev/null 2>&1
+          sudo hdiutil detach /tmp/sunshine_mount
 
           # 3. Полная точечная зачистка портов перед стартом
           echo " >> Cleaning up ports 47989, 47990 and 5902..."
