@@ -1,0 +1,155 @@
+name: MACOSOS Parsec new ARM64
+
+on:
+  workflow_dispatch:
+    inputs:
+      username:
+        description: 'name custom user'
+        required: true
+        default: 'ktoya'
+        type: string
+      use_secrets:
+        description: 'Использовать секреты из GitHub Secrets (true/false)'
+        required: true
+        default: true
+        type: boolean
+      create_user:
+        description: 'Создавать кастомного пользователя через dscl (true/false)'
+        required: true
+        default: true
+        type: boolean
+
+jobs:
+  build-cloud-pc-mac:
+    runs-on: macos-14
+    timeout-minutes: 420
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: 1. Connect Tailscale (Official Action)
+        uses: tailscale/github-action@v4
+        with:
+#          authkey: ${{ secrets.TAIL_KEY }}
+          oauth-client-id: ${{ secrets.TAIL_OAUTH_CLIENT_ID  }}
+          oauth-secret: ${{ secrets.TAIL_OAUTH }}
+          tags: tag:ci
+          hostname: macos-arm64
+          args: '--advertise-exit-node --ssh'
+          version: 'latest'
+    
+      - name: 2. Setup Users, SSH & Environment
+        env:
+          CREATE_USER: ${{ github.event.inputs.create_user }}
+          USE_SECRETS: ${{ github.event.inputs.use_secrets }}
+          CUSTOM_USER: ${{ github.event.inputs.username }}
+          SECRET_PASS: ${{ secrets.CUSTOM_PASSWORD }}
+          MANUAL_PASS: ${{ secrets.ADMIN_PASS }}
+        run: |
+          # Жестко меняем хостнейм в самой macOS, чтобы система тоже знала своё имя
+          sudo scutil --set ComputerName "runner-macosos"
+          sudo scutil --set HostName "runner-macosos"
+          sudo scutil --set LocalHostName "runner-macosos"
+          dscacheutil -flushcache
+          sudo hostname "runner-macosos"
+
+          # fix network
+          sudo networksetup -setdnsservers Ethernet 8.8.8.8 1.1.1.1 || true
+          yes | brew install fastfetch telegram htop btop cmatrix > /dev/null 2>&1
+          fastfetch
+          if [ "$CREATE_USER" = "false" ]; then
+              echo "Создание кастомного пользователя отключено (create_user: false). Пропускаем шаг."
+              exit 0
+          fi
+
+          echo "Настраиваем пользователя $CUSTOM_USER и окружение..."
+          if [ "$USE_SECRETS" = "true" ]; then
+              ACTIVE_PASS="$SECRET_PASS"
+              echo "Используем пароль из GitHub Secrets (CUSTOM_PASSWORD)."
+          else
+              ACTIVE_PASS="$MANUAL_PASS"
+              echo "Используем пароль из ручного инпута."
+          fi
+
+          if ! id "$CUSTOM_USER" &>/dev/null; then
+              sudo dscl . -create /Users/$CUSTOM_USER
+              sudo dscl . -create /Users/$CUSTOM_USER UserShell /bin/zsh
+              sudo dscl . -create /Users/$CUSTOM_USER RealName "$CUSTOM_USER"
+              sudo dscl . -create /Users/$CUSTOM_USER UniqueID 502
+              sudo dscl . -create /Users/$CUSTOM_USER PrimaryGroupID 20
+              sudo dscl . -create /Users/$CUSTOM_USER NFSHomeDirectory /Users/$CUSTOM_USER
+              sudo mkdir -p /Users/$CUSTOM_USER
+              sudo chown -R $CUSTOM_USER:staff /Users/$CUSTOM_USER
+              echo "Пользователь $CUSTOM_USER создан через dscl."
+          else
+              echo "Пользователь $CUSTOM_USER уже существует."
+          fi
+
+          echo "$ACTIVE_PASS" | sudo dscl . -passwd /Users/$CUSTOM_USER
+          sudo dseditgroup -o edit -a "$CUSTOM_USER" -t user admin || true
+
+          echo "Проверяем статус SSH..."
+          sudo launchctl list | grep sshd || true
+
+      - name: 2.1. Deploy Parsec Host Server & Generate Connect Link
+        env:
+          PARSEC_TEAM_ID: "" # Заполни, если используешь Parsec for Teams / Enterprise, иначе оставь пустым
+        run: |
+          echo "======================================================================"
+          echo "            DEPLOYING PARSEC HOST SERVER & GENERATING LINK            "
+          echo "======================================================================"
+          
+          # 1. Устанавливаем Parsec через Homebrew CLI
+          echo " >> Installing Parsec App via Homebrew..."
+          brew install --cask parsec > /dev/null 2>&1
+
+          # 2. Генерируем конфигурацию для жесткой привязки к Tailscale IP
+          echo " >> Configuring Parsec to use Tailscale network..."
+          TS_IP=$(tailscale ip -4 2>/dev/null || echo "127.0.0.1")
+          
+          sudo launchctl asuser 501 mkdir -p /Users/runner/.parsec
+          sudo launchctl asuser 501 tee /Users/runner/.parsec/config.txt << EOF > /dev/null
+          app_lan_address = $TS_IP
+          app_network = 1
+          app_run_bg = 1
+          host_enabled = 1
+          EOF
+          
+          # 3. Чистый фоновый запуск Parsec в графической сессии раннера (пользователь 501)
+          echo " >> Launching Parsec daemon in background..."
+          sudo launchctl asuser 501 /Applications/Parsec.app/Contents/MacOS/parsecd > /dev/null 2>&1 &
+          
+          # Даем Parsec 7 секунд на инициализацию и генерацию инвайт-ссылки
+          sleep 7
+
+          # 4. Достаем динамическую ссылку для гостевого подключения (Invite Link)
+          # Логика Parsec генерирует одноразовую ссылку, которую мы парсим из лога
+          PARSEC_LOG="/Users/runner/.parsec/log.txt"
+          
+          echo " >> Searching for connection link in Parsec logs..."
+          # Если Parsec запущен через аккаунт, он создаст инвайт-ссылку. 
+          # Если аккаунта в конфиге нет, можно подключаться по Peer ID. Достаем Peer ID:
+          PEER_ID=$(grep -oE "peer_id=[0-9]+" $PARSEC_LOG | head -n 1 | cut -d'=' -f2 || true)
+          
+          echo "======================================================================"
+          echo " PARSEC DEPLOYED SUCCESSFULLY!"
+          echo " "
+          if [ ! -z "$PEER_ID" ]; then
+            echo " Your Tailscale PC IP: $TS_IP"
+            echo " Your Parsec Peer ID: $PEER_ID"
+            echo " "
+            echo " Кликните по этой ссылке или откройте в терминале своего Mac:"
+            echo " open parsec://peer_id=$PEER_ID"
+          else
+            echo " Проверьте логи ниже, если автоматическая ссылка не сгенерировалась."
+            echo " Скорее всего, вам нужно использовать Peer ID из вкладки Computers."
+          fi
+          echo "======================================================================"
+
+      - name: 3. Wait session (6 hours)
+        run: |
+          echo "Всё поднято, держим сессию..."
+          while true; do
+            sleep 60
+          done
