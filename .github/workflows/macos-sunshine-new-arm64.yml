@@ -38,7 +38,12 @@ jobs:
           hostname: macos-arm64
           args: '--advertise-exit-node --ssh'
           version: 'latest'
-
+      
+      - uses: mathio/gha-cleanup@v1
+        with:
+          remove-browsers: true
+          verbose: true
+    
       - name: 2. Setup Users, SSH & Environment
         env:
           CREATE_USER: ${{ github.event.inputs.create_user }}
@@ -57,7 +62,7 @@ jobs:
           # fix network
           #sudo networksetup -setdnsservers Wi-Fi 8.8.8.8 1.1.1.1 || true
           sudo networksetup -setdnsservers Ethernet 8.8.8.8 1.1.1.1 || true
-          yes | brew install fastfetch > /dev/null 2>&1
+          yes | brew install fastfetch telegram htop btop cmatrix microsoft-edge > /dev/null 2>&1
           fastfetch
           if [ "$CREATE_USER" = "false" ]; then
               echo "Создание кастомного пользователя отключено (create_user: false). Пропускаем шаг."
