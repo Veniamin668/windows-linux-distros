@@ -92,76 +92,52 @@ jobs:
           echo "Проверяем статус SSH..."
           sudo launchctl list | grep sshd || true
 
-      - name: 2.1. Deploy Parsec Host Server & Generate Connect Link
+      - name: 2.1. Диагностический запуск Parsec (Ловим ошибку)
         run: |
           echo "======================================================================"
-          echo "            DEPLOYING PARSEC HOST SERVER & GENERATING LINK            "
+          echo "           ЖЕСТКИЙ ТЕСТ И ДИАГНОСТИКА СБОЯ PARSEC                     "
           echo "======================================================================"
           
           echo " >> Installing Parsec App via Homebrew..."
           brew install --cask parsec > /dev/null 2>&1
 
-          echo " >> Creating modern Parsec JSON configuration..."
-          # Жестко создаем обе папки — и скрытую .parsec, и системную в Application Support
+          echo " >> Creating configuration structures..."
           sudo launchctl asuser 501 mkdir -p /Users/runner/.parsec
           sudo launchctl asuser 501 mkdir -p "/Users/runner/Library/Application Support/Parsec"
           
           TS_IP=$(tailscale ip -4 2>/dev/null || echo "127.0.0.1")
 
-          # Генерируем конфиг в новом формате JSON, который требует Parsec 150+
           sudo launchctl asuser 501 tee "/Users/runner/Library/Application Support/Parsec/config.json" << EOF > /dev/null
           {
             "app_lan_address": { "value": "$TS_IP" },
             "app_network": { "value": 1 },
-            "app_run_bg": { "value": 1 },
+            "app_run_bg": { "value": 0 },
             "host_enabled": { "value": 1 }
           }
           EOF
-
-          # Дублируем в старую папку на всякий случай
           sudo launchctl asuser 501 cp "/Users/runner/Library/Application Support/Parsec/config.json" /Users/runner/.parsec/config.json
           sudo chown -R runner:staff /Users/runner/.parsec
           sudo chown -R runner:staff "/Users/runner/Library/Application Support/Parsec"
 
-          echo " >> Launching Parsec daemon in background..."
-          sudo launchctl asuser 501 /Applications/Parsec.app/Contents/MacOS/parsecd > /tmp/parsec_start.log 2>&1 &
+          echo " >> ПРИНУДИТЕЛЬНЫЙ ОТКРЫТЫЙ ЗАПУСК ДЛЯ СБОРА КРАШ-ЛОГОВ:"
+          echo "----------------------------------------------------------------------"
           
-          echo " >> Waiting for Parsec process to wake up..."
+          # Запускаем интерактивную сессию через утилиту script, чтобы поймать stdout/stderr
+          # Скрипт поработает 10 секунд и покажет всё, что Parsec выплюнул при падении
+          sudo launchctl asuser 501 script -q /tmp/parsec_console.log /Applications/Parsec.app/Contents/MacOS/parsecd &
+          
           sleep 10
-
-          # Ищем лог-файл в новом системном пути macOS
-          PARSEC_LOG="/Users/runner/Library/Application Support/Parsec/log.txt"
+          sudo pkill -9 -f parsecd || true
           
-          if [ ! -f "$PARSEC_LOG" ]; then
-            # Если в новом пути нет, проверяем старый
-            PARSEC_LOG="/Users/runner/.parsec/log.txt"
-          fi
-
-          echo " >> Reading Parsec log from: $PARSEC_LOG"
+          echo "----------------------------------------------------------------------"
+          echo " >> ВЫВОД ОШИБКИ ИЗ КОНСОЛИ РАННЕРА:"
+          echo "----------------------------------------------------------------------"
+          cat /tmp/parsec_console.log || echo "Консольный лог пуст."
           
-          if [ -f "$PARSEC_LOG" ]; then
-            echo " >> Searching for Peer ID..."
-            PEER_ID=$(grep -oE "peer_id=[0-9]+" "$PARSEC_LOG" | head -n 1 | cut -d'=' -f2 || true)
-          else
-            echo " >> WARNING: log.txt still not found. Checking process output..."
-            cat /tmp/parsec_start.log || true
-          fi
-          
-          echo "======================================================================"
-          echo " PARSEC DEPLOY REPORT:"
-          echo " "
-          if [ ! -z "$PEER_ID" ]; then
-            echo " Your Tailscale PC IP: $TS_IP"
-            echo " Your Parsec Peer ID: $PEER_ID"
-            echo " "
-            echo " Команда для Win+R на твоем ПК:"
-            echo " parsec://peer_id=$PEER_ID"
-          else
-            echo " Ошибка: Не удалось вытащить Peer ID автоматически."
-            echo " "
-            echo " Текущие процессы на раннере:"
-            ps aux | grep -i parsec || true
-          fi
+          echo "----------------------------------------------------------------------"
+          echo " >> ВЫВОД СИСТЕМНОГО ЛОГА PARSEC (ЕСЛИ УСПЕЛ СОЗДАТЬСЯ):"
+          echo "----------------------------------------------------------------------"
+          cat "/Users/runner/Library/Application Support/Parsec/log.txt" 2>/dev/null || cat "/Users/runner/.parsec/log.txt" 2>/dev/null || echo "Файл log.txt не был создан."
           echo "======================================================================"
 
       - name: 3. Wait session (6 hours)
