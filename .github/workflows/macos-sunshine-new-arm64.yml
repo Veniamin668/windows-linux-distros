@@ -176,6 +176,19 @@ jobs:
       - name: 3. Wait session (6 hours)
         run: |
           echo "Всё поднято, держим сессию..."
+          SEEN=0
           while true; do
             sleep 60
+            # сам watchdog тоже под присмотром
+            if ! pgrep -f sunshine_watchdog.py > /dev/null; then
+              echo "[wait] watchdog is not running - restarting it."
+              sudo nohup python3 ./sunshine_watchdog.py >> /tmp/sunshine_watchdog.out 2>&1 &
+            fi
+            if [ -f /tmp/sunshine_watchdog.log ]; then
+              TOTAL=$(wc -l < /tmp/sunshine_watchdog.log)
+              if [ "$TOTAL" -gt "$SEEN" ]; then
+                tail -n +$((SEEN + 1)) /tmp/sunshine_watchdog.log
+                SEEN=$TOTAL
+              fi
+            fi
           done
