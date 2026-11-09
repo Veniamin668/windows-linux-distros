@@ -7,7 +7,7 @@ Sunshine + macOS Display Watchdog
   - Sunshine API :47989
   - Sunshine Web UI :47990
   - Tailscale endpoint
-  - Moonlight client endpoints через Tailscale
+  - Sunshine encoder / IDR-frame failures from sunshine.log
   - macOS active displays через CoreGraphics
   - Display resolution / topology changes
   - Optional stream.py panel
@@ -15,7 +15,7 @@ Sunshine + macOS Display Watchdog
 Recovery:
   - Sunshine crash recovery
   - Sunshine API recovery
-  - Moonlight client-path recovery
+  - Encoder/IDR stall recovery
   - Display change recovery
   - Optional display recovery command
   - Restart storm protection
@@ -28,7 +28,6 @@ import ctypes.util
 import os
 import re
 import signal
-import socket
 import subprocess
 import sys
 import time
@@ -97,6 +96,34 @@ STUCK_BUSY_MINUTES = max(
 
 
 # ============================================================
+# SUNSHINE ENCODER / IDR WATCHDOG
+# ============================================================
+
+# Sunshine writes this error when an IDR (key) frame was requested
+# but the active encoder did not produce one. A single occurrence
+# can be transient; repeated occurrences in a short window indicate
+# that the stream encoder may be stuck.
+
+IDR_WATCH = (
+    os.environ.get("WD_IDR_WATCH", "1") == "1"
+)
+
+IDR_WINDOW_SECONDS = max(
+    10, int(os.environ.get("WD_IDR_WINDOW_SECONDS", "60"))
+)
+
+IDR_FAIL_LIMIT = max(
+    2, int(os.environ.get("WD_IDR_FAIL_LIMIT", "5"))
+)
+
+IDR_RESTART_COOLDOWN = max(
+    60, int(os.environ.get("WD_IDR_RESTART_COOLDOWN", "180"))
+)
+
+IDR_ERROR_TEXT = "Encoder did not produce IDR frame when requested!"
+
+
+# ============================================================
 # DISPLAY WATCHDOG CONFIGURATION
 # ============================================================
 
@@ -142,39 +169,6 @@ PANEL_CMD = os.environ.get("WD_PANEL_CMD", "")
 PANEL_HEALTH = os.environ.get(
     "WD_PANEL_HEALTH",
     "http://127.0.0.1:5902/health"
-)
-
-
-# ============================================================
-# MOONLIGHT CLIENT-PATH WATCHDOG
-# ============================================================
-
-# Проверяем TCP endpoints Sunshine, которыми пользуется Moonlight.
-# Проверка идёт по Tailscale IP, а не только через localhost.
-
-CLIENT_WATCH = (
-    os.environ.get("WD_CLIENT_WATCH", "1") == "1"
-)
-
-CLIENT_CHECK_INTERVAL = max(
-    10, int(os.environ.get("WD_CLIENT_CHECK_INTERVAL", "30"))
-)
-
-CLIENT_PROBE_TIMEOUT = max(
-    1, int(os.environ.get("WD_CLIENT_PROBE_TIMEOUT", "3"))
-)
-
-CLIENT_FAIL_LIMIT = max(
-    1, int(os.environ.get("WD_CLIENT_FAIL_LIMIT", "2"))
-)
-
-CLIENT_PORTS = tuple(
-    int(port.strip())
-    for port in os.environ.get(
-        "WD_CLIENT_PORTS",
-        "47984,47989,48010"
-    ).split(",")
-    if port.strip()
 )
 
 
@@ -322,37 +316,127 @@ def tailscale_ip():
         return None
 
 
-def moonlight_client_path_ok(host):
+# ============================================================
+# SUNSHINE LOG / ENCODER MONITOR
+# ============================================================
+
+class SunshineLogMonitor:
+    """Incrementally reads new Sunshine log lines.
+
+    Starts at EOF so old errors from a previous runner session do not
+    trigger an immediate restart. Handles log rotation and truncation.
     """
-    Проверяет TCP endpoints Sunshine по Tailscale IP.
 
-    47984 - Sunshine HTTPS control endpoint
-    47989 - Sunshine serverinfo endpoint
-    48010 - Sunshine RTSP endpoint
+    def __init__(self, path):
+        self.path = path
+        self.file = None
+        self.inode = None
+        self.offset = 0
+        self.idr_errors = deque()
+        self.last_restart = 0.0
+        self._open_at_end()
 
-    Это проверка доступности сетевых точек подключения Moonlight,
-    а не запуск полноценной игровой/desktop streaming-сессии.
-    """
-
-    if not host:
-        return False, ["Tailscale IP unavailable"]
-
-    failed = []
-
-    for port in CLIENT_PORTS:
+    def _open_at_end(self):
+        self._close()
         try:
-            with socket.create_connection(
-                (host, port),
-                timeout=CLIENT_PROBE_TIMEOUT
-            ):
-                pass
-
-        except Exception as exc:
-            failed.append(
-                f"{port} ({type(exc).__name__}: {exc})"
+            self.file = open(
+                self.path, "r", encoding="utf-8", errors="replace"
             )
+            stat = os.fstat(self.file.fileno())
+            self.inode = (stat.st_dev, stat.st_ino)
+            self.file.seek(0, os.SEEK_END)
+            self.offset = self.file.tell()
+        except FileNotFoundError:
+            self.file = None
+            self.inode = None
+            self.offset = 0
+        except Exception as exc:
+            self.file = None
+            self.inode = None
+            self.offset = 0
+            log(f"Sunshine log monitor could not open log: {exc}")
 
-    return len(failed) == 0, failed
+    def _close(self):
+        if self.file:
+            try:
+                self.file.close()
+            except Exception:
+                pass
+        self.file = None
+
+    @staticmethod
+    def _line_timestamp(line, fallback):
+        # Sunshine format: [2026-11-09 13:58:25.813]: Error: ...
+        match = re.search(
+            r"\[(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2})(?:\.\d+)?\]",
+            line
+        )
+        if match:
+            try:
+                return time.mktime(
+                    time.strptime(match.group(1), "%Y-%m-%d %H:%M:%S")
+                )
+            except Exception:
+                pass
+        return fallback
+
+    def poll(self, now=None):
+        """Return (count_in_window, should_restart, newest_lines)."""
+        now = time.time() if now is None else now
+        newest_lines = []
+
+        try:
+            stat = os.stat(self.path)
+            current_inode = (stat.st_dev, stat.st_ino)
+
+            if (
+                self.file is None
+                or current_inode != self.inode
+                or stat.st_size < self.offset
+            ):
+                # Reopen at EOF on rotation/truncation. Do not replay
+                # historical errors from the replacement log.
+                self._open_at_end()
+                return len(self.idr_errors), False, newest_lines
+
+            self.file.seek(self.offset)
+            lines = self.file.readlines()
+            self.offset = self.file.tell()
+
+            for line in lines:
+                if IDR_ERROR_TEXT in line:
+                    stamp = self._line_timestamp(line, now)
+                    self.idr_errors.append(stamp)
+                    newest_lines.append(line.rstrip())
+
+        except FileNotFoundError:
+            return len(self.idr_errors), False, newest_lines
+        except Exception as exc:
+            log(f"Sunshine log monitor read error: {exc}")
+            return len(self.idr_errors), False, newest_lines
+
+        cutoff = now - IDR_WINDOW_SECONDS
+        while self.idr_errors and self.idr_errors[0] < cutoff:
+            self.idr_errors.popleft()
+
+        should_restart = len(self.idr_errors) >= IDR_FAIL_LIMIT
+        return len(self.idr_errors), should_restart, newest_lines
+
+    def mark_restarted(self):
+        self.idr_errors.clear()
+        self.last_restart = time.monotonic()
+
+        # Move to current EOF so errors already present before the
+        # recovery do not immediately retrigger the same condition.
+        try:
+            if self.file:
+                self.file.seek(0, os.SEEK_END)
+                self.offset = self.file.tell()
+        except Exception:
+            self._open_at_end()
+
+    def close(self):
+        self._close()
 
 
 # ============================================================
@@ -388,6 +472,8 @@ class DisplayMonitor:
 
             self.cg = ctypes.CDLL(path)
 
+            # Active display list
+
             self.cg.CGGetActiveDisplayList.argtypes = [
                 ctypes.c_uint32,
                 ctypes.POINTER(ctypes.c_uint32),
@@ -397,6 +483,8 @@ class DisplayMonitor:
             self.cg.CGGetActiveDisplayList.restype = (
                 ctypes.c_int32
             )
+
+            # Display status
 
             self.cg.CGDisplayIsOnline.argtypes = [
                 ctypes.c_uint32
@@ -414,6 +502,8 @@ class DisplayMonitor:
                 ctypes.c_bool
             )
 
+            # Display dimensions
+
             self.cg.CGDisplayPixelsWide.argtypes = [
                 ctypes.c_uint32
             ]
@@ -429,6 +519,8 @@ class DisplayMonitor:
             self.cg.CGDisplayPixelsHigh.restype = (
                 ctypes.c_size_t
             )
+
+            # Display bounds
 
             self.cg.CGDisplayBounds.argtypes = [
                 ctypes.c_uint32
@@ -639,6 +731,8 @@ def restart_sunshine(reason):
 
         log(f"warning: pkill failed: {exc}")
 
+    # Wait for old process to disappear.
+
     for _ in range(15):
 
         if not sunshine_running():
@@ -647,6 +741,8 @@ def restart_sunshine(reason):
         time.sleep(1)
 
     time.sleep(2)
+
+    # Start Sunshine in GUI user context.
 
     try:
 
@@ -864,17 +960,26 @@ def main():
         f"display_recovery_cmd="
         f"{'set' if DISPLAY_RECOVERY_CMD else 'off'} "
         f"panel_watch={PANEL_WATCH} "
-        f"client_watch={CLIENT_WATCH} "
-        f"client_interval={CLIENT_CHECK_INTERVAL}s "
-        f"client_fail_limit={CLIENT_FAIL_LIMIT} "
-        f"client_ports={','.join(str(p) for p in CLIENT_PORTS)}"
+        f"idr_watch={IDR_WATCH} "
+        f"idr_window={IDR_WINDOW_SECONDS}s "
+        f"idr_fail_limit={IDR_FAIL_LIMIT}"
     )
 
     log("=" * 64)
 
+    # --------------------------------------------------------
+    # DISPLAY INITIALIZATION
+    # --------------------------------------------------------
+
     display_monitor = (
         DisplayMonitor()
         if DISPLAY_WATCH
+        else None
+    )
+
+    sunshine_log_monitor = (
+        SunshineLogMonitor(SUNSHINE_LOG)
+        if IDR_WATCH
         else None
     )
 
@@ -894,6 +999,10 @@ def main():
 
     last_display_recovery_command = 0.0
 
+    # --------------------------------------------------------
+    # STATE
+    # --------------------------------------------------------
+
     restarts = deque()
 
     core_fails = 0
@@ -910,14 +1019,13 @@ def main():
 
     ts_was_ok = None
 
-    client_checked_at = 0.0
-    client_fails = 0
-    client_path_was_ok = None
-    client_restart_trigger = False
-
     grace_until = (
         time.monotonic() + START_GRACE
     )
+
+    # ========================================================
+    # MAIN LOOP
+    # ========================================================
 
     while RUNNING:
 
@@ -967,6 +1075,10 @@ def main():
 
                 display_unavailable_logged = False
 
+                # --------------------------------------------
+                # NO ACTIVE DISPLAY
+                # --------------------------------------------
+
                 if len(signature) == 0:
 
                     display_no_active_count += 1
@@ -990,6 +1102,8 @@ def main():
                             f"for {display_no_active_count} checks."
                         )
 
+                    # Optional external display recovery.
+
                     if (
                         display_no_active_count
                         >= DISPLAY_NO_DISPLAY_LIMIT
@@ -1007,6 +1121,10 @@ def main():
 
                         recover_display()
 
+                # --------------------------------------------
+                # ACTIVE DISPLAY PRESENT
+                # --------------------------------------------
+
                 else:
 
                     if display_no_active_count:
@@ -1018,11 +1136,18 @@ def main():
                             "failed check(s)."
                         )
 
+                        # Even if the same ID and resolution
+                        # returned, reopen Sunshine capture.
+
                         display_changed_at = now
 
                     display_no_active_count = 0
 
                     display_outage_recovery_attempted = False
+
+                    # ----------------------------------------
+                    # FIRST DISPLAY BASELINE
+                    # ----------------------------------------
 
                     if not display_baseline_set:
 
@@ -1036,6 +1161,10 @@ def main():
                                 signature
                             )
                         )
+
+                    # ----------------------------------------
+                    # DISPLAY CHANGE DETECTION
+                    # ----------------------------------------
 
                     elif (
                         signature
@@ -1052,6 +1181,10 @@ def main():
                                 signature
                             )
                         )
+
+                # --------------------------------------------
+                # WAIT FOR DISPLAY TO SETTLE
+                # --------------------------------------------
 
                 if (
                     DISPLAY_CHANGE_RESTART
@@ -1086,10 +1219,51 @@ def main():
             continue
 
         # ----------------------------------------------------
+        # SUNSHINE ENCODER / IDR HEALTH
+        # ----------------------------------------------------
+
+        idr_restart_trigger = False
+
+        if sunshine_log_monitor is not None:
+
+            idr_count, idr_trigger, new_idr_lines = (
+                sunshine_log_monitor.poll()
+            )
+
+            if new_idr_lines:
+                for _line in new_idr_lines:
+                    log(
+                        "Sunshine encoder warning: "
+                        + _line[-300:]
+                    )
+
+            if idr_trigger:
+                idr_restart_trigger = (
+                    time.monotonic()
+                    - sunshine_log_monitor.last_restart
+                    >= IDR_RESTART_COOLDOWN
+                )
+
+                if idr_restart_trigger:
+                    log(
+                        "ENCODER STALL SUSPECTED: "
+                        f"{idr_count} IDR failures within "
+                        f"{IDR_WINDOW_SECONDS}s "
+                        f"(threshold={IDR_FAIL_LIMIT})."
+                    )
+
+        # ----------------------------------------------------
         # SUNSHINE HEALTH
         # ----------------------------------------------------
 
         problems = []
+
+        if idr_restart_trigger:
+            problems.append(
+                f"encoder failed to produce IDR frames "
+                f"({IDR_FAIL_LIMIT}+ errors in "
+                f"{IDR_WINDOW_SECONDS}s)"
+            )
 
         proc_alive = sunshine_running()
 
@@ -1147,63 +1321,6 @@ def main():
                     )
 
                 ts_was_ok = ts_ok
-
-        # ----------------------------------------------------
-        # MOONLIGHT CLIENT-PATH CHECK
-        # ----------------------------------------------------
-
-        client_restart_trigger = False
-
-        if (
-            CLIENT_WATCH
-            and ts_ip
-            and now - client_checked_at >= CLIENT_CHECK_INTERVAL
-        ):
-
-            client_checked_at = now
-
-            client_ok, client_failed_ports = (
-                moonlight_client_path_ok(ts_ip)
-            )
-
-            if client_ok:
-
-                if client_fails:
-                    log(
-                        "Moonlight client path recovered "
-                        f"after {client_fails} failed check(s)."
-                    )
-
-                elif client_path_was_ok is not True:
-                    log(
-                        "Moonlight client path OK via "
-                        f"Tailscale ({ts_ip}); "
-                        f"TCP ports: {','.join(str(p) for p in CLIENT_PORTS)}"
-                    )
-
-                client_fails = 0
-                client_path_was_ok = True
-
-            else:
-
-                client_fails += 1
-                client_path_was_ok = False
-
-                log(
-                    f"MOONLIGHT CLIENT PATH UNHEALTHY "
-                    f"{client_fails}/{CLIENT_FAIL_LIMIT} "
-                    f"via {ts_ip}: "
-                    + ", ".join(client_failed_ports)
-                )
-
-                if client_fails >= CLIENT_FAIL_LIMIT:
-                    client_restart_trigger = True
-
-        if client_restart_trigger:
-            problems.append(
-                "Moonlight client endpoints unavailable "
-                f"({client_fails}/{CLIENT_FAIL_LIMIT})"
-            )
 
         # ----------------------------------------------------
         # BUSY STATE
@@ -1288,6 +1405,9 @@ def main():
                         display_restart_reason
                     )
 
+                    if sunshine_log_monitor is not None:
+                        sunshine_log_monitor.mark_restarted()
+
                     restarts.append(
                         time.monotonic()
                     )
@@ -1297,10 +1417,6 @@ def main():
                     )
 
                     core_fails = 0
-
-                    client_fails = 0
-                    client_path_was_ok = None
-                    client_checked_at = time.monotonic()
 
                     down_since = None
 
@@ -1353,10 +1469,13 @@ def main():
             + "; ".join(problems)
         )
 
+        # Dead process = immediate recovery.
+        # API/Web UI failures = FAIL_LIMIT consecutive checks.
+
         need_restart = (
             not proc_alive
             or core_fails >= FAIL_LIMIT
-            or client_restart_trigger
+            or idr_restart_trigger
         )
 
         if not need_restart:
@@ -1398,15 +1517,14 @@ def main():
             "; ".join(problems)
         )
 
+        if sunshine_log_monitor is not None:
+            sunshine_log_monitor.mark_restarted()
+
         restarts.append(
             time.monotonic()
         )
 
         core_fails = 0
-
-        client_fails = 0
-        client_path_was_ok = None
-        client_checked_at = time.monotonic()
 
         down_since = None
 
@@ -1415,6 +1533,9 @@ def main():
         grace_until = (
             time.monotonic() + START_GRACE
         )
+
+    if sunshine_log_monitor is not None:
+        sunshine_log_monitor.close()
 
     log("Watchdog stopped.")
 
