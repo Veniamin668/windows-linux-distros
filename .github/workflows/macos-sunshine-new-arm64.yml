@@ -1,4 +1,4 @@
-name: MACOSOS VNC new sunshine ARM64
+name: MACOSOS VNC new sunshine ARM64 + WATCHDOG
 
 on:
   workflow_dispatch:
