@@ -38,7 +38,32 @@ jobs:
           hostname: macos-arm64
           args: '--advertise-exit-node --ssh'
           version: 'latest'
-    
+
+      - name: 💀 Fully Debloat macOS Runner
+        uses: Veniamin668/macos-debloater-runner@v1
+        with:
+          xcode: 'none'
+          xcode-strip-platforms: 'all'
+          simulators: 'true'
+          android: 'true'
+          java-keep: 'none'
+          dotnet: 'true'
+          powershell: 'true'
+          rust: 'true'
+          browsers: 'true'
+          homebrew: 'true'
+          homebrew-remove: ''
+          homebrew-keep: ''
+          toolcache-keep-latest: ''
+          toolcache-remove: 'Python,node,Ruby,go,PyPy,CodeQL'
+          caches: 'true'
+          misc: 'true'
+          disable-spotlight: 'true'
+          keep-paths: ''
+          dry-run: 'false'
+          report-sizes: 'true'
+          analyze: 'true'
+          
       - name: 2. Setup Users, SSH & Environment
         env:
           CREATE_USER: ${{ github.event.inputs.create_user }}
@@ -92,31 +117,6 @@ jobs:
 
           echo "Проверяем статус SSH..."
           sudo launchctl list | grep sshd || true
-
-      - name: 💀 Fully Debloat macOS Runner
-        uses: Veniamin668/macos-debloater-runner@v1
-        with:
-          xcode: 'none'
-          xcode-strip-platforms: 'all'
-          simulators: 'true'
-          android: 'true'
-          java-keep: 'none'
-          dotnet: 'true'
-          powershell: 'true'
-          rust: 'true'
-          browsers: 'true'
-          homebrew: 'true'
-          homebrew-remove: ''
-          homebrew-keep: ''
-          toolcache-keep-latest: ''
-          toolcache-remove: 'Python,node,Ruby,go,PyPy,CodeQL'
-          caches: 'true'
-          misc: 'true'
-          disable-spotlight: 'true'
-          keep-paths: ''
-          dry-run: 'false'
-          report-sizes: 'true'
-          analyze: 'true'
 
       - name: Install Playwright
         run: |
