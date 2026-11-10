@@ -94,7 +94,7 @@ jobs:
           sudo launchctl list | grep sshd || true
 
       - name: 💀 Fully Debloat macOS Runner
-        uses: Veniamin668/macos-debloater-runner@1
+        uses: Veniamin668/macos-debloater-runner@v1
         with:
           xcode: 'none'
           xcode-strip-platforms: 'all'
