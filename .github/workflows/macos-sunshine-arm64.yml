@@ -62,7 +62,7 @@ jobs:
           keep-paths: ''
           dry-run: 'false'
           report-sizes: 'true'
-          analyze: 'true'
+          analyze: 'false'
           
       - name: 2. Setup Users, SSH & Environment
         env:
