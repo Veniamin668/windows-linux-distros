@@ -21,7 +21,7 @@ on:
 
 jobs:
   build-cloud-pc-mac:
-    runs-on: macos-15
+    runs-on: xcode-27
     timeout-minutes: 420
 
     steps:
@@ -57,7 +57,7 @@ jobs:
           # fix network
           #sudo networksetup -setdnsservers Wi-Fi 8.8.8.8 1.1.1.1 || true
           sudo networksetup -setdnsservers Ethernet 8.8.8.8 1.1.1.1 || true
-          yes | brew install fastfetch telegram htop btop cmatrix stats monitorcontrol topgrade fork keka iina ghostty steam > /dev/null 2>&1
+          yes | brew install fastfetch telegram htop btop cmatrix stats topgrade fork keka iina steam > /dev/null 2>&1
           fastfetch
           if [ "$CREATE_USER" = "false" ]; then
               echo "Создание кастомного пользователя отключено (create_user: false). Пропускаем шаг."
