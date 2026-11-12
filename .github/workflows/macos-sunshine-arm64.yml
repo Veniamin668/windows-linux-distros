@@ -124,7 +124,7 @@ jobs:
           sudo launchctl list | grep sshd || true
       
       - name: RU language, Russian PC layout, Yekaterinburg time, 24h
-        shell: zsh {0}
+        shell: zsh
         run: |
           # timezone
           sudo systemsetup -settimezone Asia/Yekaterinburg 2>/dev/null \
@@ -141,10 +141,17 @@ jobs:
           defaults write com.apple.HIToolbox AppleEnabledInputSources -array "$ABC" "$RUS"
           defaults write com.apple.HIToolbox AppleSelectedInputSources -array "$ABC"
 
+          # input source hotkeys (written BEFORE the restarts so they get picked up)
+          # 60 = previous input source (Ctrl+Space), 61 = next source in Input menu (Ctrl+Opt+Space)
+          defaults write com.apple.symbolichotkeys AppleSymbolicHotKeys -dict-add 60 \
+            '<dict><key>enabled</key><true/><key>value</key><dict><key>parameters</key><array><integer>32</integer><integer>49</integer><integer>262144</integer></array><key>type</key><string>standard</string></dict></dict>'
+          defaults write com.apple.symbolichotkeys AppleSymbolicHotKeys -dict-add 61 \
+            '<dict><key>enabled</key><true/><key>value</key><dict><key>parameters</key><array><integer>32</integer><integer>49</integer><integer>786432</integer></array><key>type</key><string>standard</string></dict></dict>'
+          /System/Library/PrivateFrameworks/SystemAdministration.framework/Resources/activateSettings -u 2>/dev/null || true
+
           # apply without reboot
           killall cfprefsd 2>/dev/null || true
-          killall Finder Dock SystemUIServer ControlCenter TextInputMenuAgent 2>/dev/null || true
-          defaults write com.apple.symbolichotkeys AppleSymbolicHotKeys -dict-add 60 "{enabled = 1; value = { parameters = (32, 49, 262144); type = 'standard'; }; }"
+          killall Finder Dock SystemUIServer ControlCenter TextInputMenuAgent Spotlight 2>/dev/null || true
 
           # enable the layouts live through the Text Input Sources API
           swift - <<'EOF' || true
@@ -158,7 +165,7 @@ jobs:
           }
           if let s = src("com.apple.keylayout.ABC") { TISSelectInputSource(s) }
           EOF
-
+          
       - name: 🖼️ Set macOS Wallpaper
         if: github.event.inputs.macos_wallpaper != ''
         env:
