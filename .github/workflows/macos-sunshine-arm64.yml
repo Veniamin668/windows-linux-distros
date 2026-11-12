@@ -122,7 +122,7 @@ jobs:
 
           echo "Проверяем статус SSH..."
           sudo launchctl list | grep sshd || true
-      
+
       - name: RU language, Russian PC layout, Yekaterinburg time, 24h
         shell: zsh {0}
         run: |
@@ -134,6 +134,7 @@ jobs:
           defaults write -g AppleICUForce24HourTime -bool true
           defaults write -g AppleLocale -string "ru_RU"
           defaults write -g AppleLanguages -array "ru" "en"
+          defaults write com.apple.Spotlight AppleLanguages -array "ru" "en"
 
           # layouts: ABC + Russian - PC
           ABC='<dict><key>InputSourceKind</key><string>Keyboard Layout</string><key>KeyboardLayout ID</key><integer>252</integer><key>KeyboardLayout Name</key><string>ABC</string></dict>'
@@ -151,7 +152,8 @@ jobs:
 
           # apply without reboot
           killall cfprefsd 2>/dev/null || true
-          killall Finder Dock SystemUIServer ControlCenter TextInputMenuAgent Spotlight 2>/dev/null || true
+          killall Finder Dock SystemUIServer ControlCenter TextInputMenuAgent 2>/dev/null || true
+          killall -9 Spotlight corespotlightd suggestd parsecd siriknowledged 2>/dev/null || true
 
           # enable the layouts live through the Text Input Sources API
           swift - <<'EOF' || true
@@ -165,7 +167,7 @@ jobs:
           }
           if let s = src("com.apple.keylayout.ABC") { TISSelectInputSource(s) }
           EOF
-          
+
       - name: 🖼️ Set macOS Wallpaper
         if: github.event.inputs.macos_wallpaper != ''
         env:
