@@ -122,20 +122,42 @@ jobs:
 
           echo "Проверяем статус SSH..."
           sudo launchctl list | grep sshd || true
-
-      - name: 🖼️ Set macOS Wallpaper
-        if: github.event.inputs.macos_wallpaper != ''
-        env:
-          WALLPAPER_PATH: ${{ github.event.inputs.macos_wallpaper }}
+      
+      - name: RU language, Russian PC layout, Yekaterinburg time, 24h
+        shell: zsh {0}
         run: |
-          FULL_PATH="$(realpath "$WALLPAPER_PATH" 2>/dev/null || true)"
-          if [ -f "$FULL_PATH" ]; then
-            desktoppr "$FULL_PATH"
-            echo "✅ Обои установлены: $FULL_PATH"
-          else
-            echo "⚠️ Файл обоев не найден: $WALLPAPER_PATH"
-          fi
+          # timezone
+          sudo systemsetup -settimezone Asia/Yekaterinburg 2>/dev/null \
+            || sudo ln -sfn /var/db/timezone/zoneinfo/Asia/Yekaterinburg /etc/localtime
 
+          # 24h clock + RU language/region
+          defaults write -g AppleICUForce24HourTime -bool true
+          defaults write -g AppleLocale -string "ru_RU"
+          defaults write -g AppleLanguages -array "ru" "en"
+
+          # layouts: ABC + Russian - PC
+          ABC='<dict><key>InputSourceKind</key><string>Keyboard Layout</string><key>KeyboardLayout ID</key><integer>252</integer><key>KeyboardLayout Name</key><string>ABC</string></dict>'
+          RUS='<dict><key>InputSourceKind</key><string>Keyboard Layout</string><key>KeyboardLayout ID</key><integer>19458</integer><key>KeyboardLayout Name</key><string>RussianWin</string></dict>'
+          defaults write com.apple.HIToolbox AppleEnabledInputSources -array "$ABC" "$RUS"
+          defaults write com.apple.HIToolbox AppleSelectedInputSources -array "$ABC"
+
+          # apply without reboot
+          killall cfprefsd 2>/dev/null || true
+          killall Finder Dock SystemUIServer ControlCenter TextInputMenuAgent 2>/dev/null || true
+
+          # enable the layouts live through the Text Input Sources API
+          swift - <<'EOF' || true
+          import Carbon
+          func src(_ id: String) -> TISInputSource? {
+            let f = [kTISPropertyInputSourceID as String: id] as CFDictionary
+            return (TISCreateInputSourceList(f, true)?.takeRetainedValue() as? [TISInputSource])?.first
+          }
+          for id in ["com.apple.keylayout.ABC", "com.apple.keylayout.RussianWin"] {
+            if let s = src(id) { TISEnableInputSource(s) }
+          }
+          if let s = src("com.apple.keylayout.ABC") { TISSelectInputSource(s) }
+          EOF
+      
       - name: 🔔 Enable NotificationCenter
         if: github.event.inputs.enable_notifications == true || github.event.inputs.enable_notifications == 'true'
         run: |
