@@ -124,7 +124,7 @@ jobs:
           sudo launchctl list | grep sshd || true
       
       - name: RU language, Russian PC layout, Yekaterinburg time, 24h
-        shell: zsh
+        shell: zsh {0}
         run: |
           # timezone
           sudo systemsetup -settimezone Asia/Yekaterinburg 2>/dev/null \
