@@ -144,6 +144,7 @@ jobs:
           # apply without reboot
           killall cfprefsd 2>/dev/null || true
           killall Finder Dock SystemUIServer ControlCenter TextInputMenuAgent 2>/dev/null || true
+          defaults write com.apple.symbolichotkeys AppleSymbolicHotKeys -dict-add 60 "{enabled = 1; value = { parameters = (32, 49, 262144); type = 'standard'; }; }"
 
           # enable the layouts live through the Text Input Sources API
           swift - <<'EOF' || true
@@ -157,7 +158,20 @@ jobs:
           }
           if let s = src("com.apple.keylayout.ABC") { TISSelectInputSource(s) }
           EOF
-      
+
+      - name: 🖼️ Set macOS Wallpaper
+        if: github.event.inputs.macos_wallpaper != ''
+        env:
+          WALLPAPER_PATH: ${{ github.event.inputs.macos_wallpaper }}
+        run: |
+          FULL_PATH="$(realpath "$WALLPAPER_PATH" 2>/dev/null || true)"
+          if [ -f "$FULL_PATH" ]; then
+            desktoppr "$FULL_PATH"
+            echo "✅ Обои установлены: $FULL_PATH"
+          else
+            echo "⚠️ Файл обоев не найден: $WALLPAPER_PATH"
+          fi
+          
       - name: 🔔 Enable NotificationCenter
         if: github.event.inputs.enable_notifications == true || github.event.inputs.enable_notifications == 'true'
         run: |
@@ -165,7 +179,7 @@ jobs:
           open -a NotificationCenter || true
 
       - name: 💀 Fully Debloat macOS Runner
-        uses: Veniamin668/macos-debloater-runner@v1
+        uses: Veniamin668/macos-debloater-runner@v2
         with:
           xcode: 'none'
           xcode-strip-platforms: 'all'
