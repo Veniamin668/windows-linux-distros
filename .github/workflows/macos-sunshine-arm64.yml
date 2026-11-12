@@ -21,7 +21,7 @@ on:
       macos_wallpaper:
         description: 'Путь к файлу обоев для macOS (оставь пустым, чтобы не менять)'
         required: false
-        default: 'wallpapers/macos-wall-1.jpg'
+        default: 'wallpapers/macos-wall-1.jpeg'
         type: string
 
       enable_notifications:
