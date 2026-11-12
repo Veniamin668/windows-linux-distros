@@ -25,14 +25,9 @@ on:
         type: string
 
       enable_notifications:
-        description: 'Включить Центр уведомлений (без перезапуска Dock)'
+        description: 'Включить Центр уведомлений (+ виджеты)'
         required: false
         default: true
-        type: boolean
-      enable_widgets:
-        description: 'Включить виджеты рабочего стола (перезапускает Dock)'
-        required: false
-        default: false
         type: boolean
         
 jobs:
@@ -146,11 +141,6 @@ jobs:
         run: |
           launchctl load -w /System/Library/LaunchAgents/com.apple.notificationcenterui.plist 2>/dev/null || true
           open -a NotificationCenter || true
-
-      - name: 🧩 Enable Desktop Widgets (Restart Dock)
-        if: github.event.inputs.enable_widgets == true || github.event.inputs.enable_widgets == 'true'
-        run: |
-          killall Dock
 
       - name: 💀 Fully Debloat macOS Runner
         uses: Veniamin668/macos-debloater-runner@v1
