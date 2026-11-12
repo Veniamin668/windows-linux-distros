@@ -23,6 +23,17 @@ on:
         required: false
         default: 'wallpapers/macos-wall-1.jpg'
         type: string
+
+      enable_notifications:
+        description: 'Включить Центр уведомлений (без перезапуска Dock)'
+        required: false
+        default: true
+        type: boolean
+      enable_widgets:
+        description: 'Включить виджеты рабочего стола (перезапускает Dock)'
+        required: false
+        default: false
+        type: boolean
         
 jobs:
   build-cloud-pc-mac:
@@ -129,6 +140,18 @@ jobs:
           else
             echo "⚠️ Файл обоев не найден: $WALLPAPER_PATH"
           fi
+
+      - name: 🔔 Enable NotificationCenter
+        if: github.event.inputs.enable_notifications == true || github.event.inputs.enable_notifications == 'true'
+        run: |
+          launchctl load -w /System/Library/LaunchAgents/com.apple.notificationcenterui.plist 2>/dev/null || true
+          open -a NotificationCenter || true
+
+      - name: 🧩 Enable Desktop Widgets (Restart Dock)
+        if: github.event.inputs.enable_widgets == true || github.event.inputs.enable_widgets == 'true'
+        run: |
+          defaults write com.apple.dock tilesize -int 36
+          killall Dock
 
       - name: 💀 Fully Debloat macOS Runner
         uses: Veniamin668/macos-debloater-runner@v1
