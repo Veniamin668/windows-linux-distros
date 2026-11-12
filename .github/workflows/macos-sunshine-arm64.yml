@@ -18,7 +18,12 @@ on:
         required: true
         default: true
         type: boolean
-
+      macos_wallpaper:
+        description: 'Путь к файлу обоев для macOS (оставь пустым, чтобы не менять)'
+        required: false
+        default: 'wallpapers/macos-wall-1.jpg'
+        type: string
+        
 jobs:
   build-cloud-pc-mac:
     runs-on: xcode-27
@@ -111,7 +116,20 @@ jobs:
 
           echo "Проверяем статус SSH..."
           sudo launchctl list | grep sshd || true
-      
+
+      - name: 🖼️ Set macOS Wallpaper
+        if: github.event.inputs.macos_wallpaper != ''
+        env:
+          WALLPAPER_PATH: ${{ github.event.inputs.macos_wallpaper }}
+        run: |
+          FULL_PATH="$(realpath "$WALLPAPER_PATH" 2>/dev/null || true)"
+          if [ -f "$FULL_PATH" ]; then
+            desktoppr "$FULL_PATH"
+            echo "✅ Обои установлены: $FULL_PATH"
+          else
+            echo "⚠️ Файл обоев не найден: $WALLPAPER_PATH"
+          fi
+
       - name: 💀 Fully Debloat macOS Runner
         uses: Veniamin668/macos-debloater-runner@v1
         with:
