@@ -150,7 +150,6 @@ jobs:
       - name: 🧩 Enable Desktop Widgets (Restart Dock)
         if: github.event.inputs.enable_widgets == true || github.event.inputs.enable_widgets == 'true'
         run: |
-          defaults write com.apple.dock tilesize -int 36
           killall Dock
 
       - name: 💀 Fully Debloat macOS Runner
