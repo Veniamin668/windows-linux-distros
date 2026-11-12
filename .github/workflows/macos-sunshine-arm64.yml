@@ -27,7 +27,26 @@ jobs:
     steps:
       - name: Checkout Repository
         uses: actions/checkout@v4
+      
+      - name: Set custom runner password
+        env:
+          NEW_PASSWORD: ${{ secrets.ADMIN_PASS }}
+        run: |
+          if [ -z "$NEW_PASSWORD" ]; then
+          echo "Секрет ADMIN_PASS не задан, пропускаем смену пароля."
+          exit 0
+          fi
 
+          OLD_PASSWORD=$(sudo python3 -c '
+          key = [125, 137, 82, 35, 210, 188, 221, 234, 163, 185, 31]
+          data = open("/etc/kcpassword", "rb").read()
+          decoded = bytes([b ^ key[i % len(key)] for i, b in enumerate(data)])
+          print(decoded.split(b"\x00")[0].decode("utf-8", errors="ignore"))
+          ')
+
+          ~/bootstrap/change_password runner "$OLD_PASSWORD" "$NEW_PASSWORD"
+          echo "::add-mask::$OLD_PASSWORD"
+          
       - name: 1. Connect Tailscale (Official Action)
         uses: tailscale/github-action@v4
         with:
@@ -57,7 +76,7 @@ jobs:
           # fix network
           #sudo networksetup -setdnsservers Wi-Fi 8.8.8.8 1.1.1.1 || true
           sudo networksetup -setdnsservers Ethernet 8.8.8.8 1.1.1.1 || true
-          yes | brew install fastfetch telegram htop btop cmatrix stats topgrade fork keka iina steam > /dev/null 2>&1
+          yes | brew install desktoppr fastfetch telegram htop btop cmatrix stats topgrade fork keka iina steam > /dev/null 2>&1
           fastfetch
           if [ "$CREATE_USER" = "false" ]; then
               echo "Создание кастомного пользователя отключено (create_user: false). Пропускаем шаг."
