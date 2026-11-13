@@ -123,7 +123,7 @@ jobs:
           echo "Проверяем статус SSH..."
           sudo launchctl list | grep sshd || true
 
-      - name: RU language, Russian PC layout, Yekaterinburg time, 24h
+      - name: RU language, Russian-RU PC layout, Yekaterinburg time, 24h
         shell: zsh {0}
         run: |
           # timezone
@@ -133,11 +133,12 @@ jobs:
           # 24h clock + RU language/region
           defaults write -g AppleICUForce24HourTime -bool true
           defaults write -g AppleLocale -string "ru_RU"
-          defaults write -g AppleLanguages -array "ru" "en-US"
+          defaults write -g AppleLanguages -array "ru-RU" "en-US"
           defaults write com.apple.Spotlight AppleLanguages -array "ru-RU" "en-US"
           defaults delete com.apple.Spotlight AppleLanguages 2>/dev/null || true
-          sudo languagesetup -langspec ru 2>/dev/null || true
-          sudo defaults write /Library/Preferences/.GlobalPreferences AppleLanguages -array "ru" "en-US"
+          rm -f ~/Library/Containers/com.apple.Spotlight/Data/Library/Preferences/com.apple.Spotlight.plist 2>/dev/null || true
+          sudo languagesetup -langspec ru-RU 2>/dev/null || true
+          sudo defaults write /Library/Preferences/.GlobalPreferences AppleLanguages -array "ru-RU" "en-US"
           sudo defaults write /Library/Preferences/.GlobalPreferences AppleLocale -string "ru_RU"
 
           # layouts: ABC + Russian - PC
