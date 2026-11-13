@@ -4,7 +4,14 @@ name: Watch runner-images macOS updates
 on:
   schedule:
     - cron: '0 6 * * *'
+
   workflow_dispatch:
+    inputs:
+      force_notify:
+        description: 'Force notification for all tracked images'
+        required: false
+        type: boolean
+        default: false
 
 permissions:
   contents: write
@@ -30,6 +37,7 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TG_BOT_TOKEN: ${{ secrets.TG_BOT_TOKEN }}
           TG_CHAT_ID: ${{ secrets.TG_CHAT_ID }}
+          FORCE_NOTIFY: ${{ inputs.force_notify }}
         run: |
           set -euo pipefail
 
@@ -68,6 +76,11 @@ jobs:
           GH_TOKEN = os.environ.get("GH_TOKEN", "")
           TG_TOKEN = os.environ.get("TG_BOT_TOKEN", "")
           TG_CHAT = os.environ.get("TG_CHAT_ID", "")
+
+          FORCE_NOTIFY = (
+              os.environ.get("FORCE_NOTIFY", "false").lower()
+              == "true"
+          )
 
           if not GH_TOKEN:
               sys.exit("ERROR: GITHUB_TOKEN is missing")
@@ -358,7 +371,6 @@ jobs:
 
           def escape_md(text):
 
-              # Escape MarkdownV2 reserved characters.
               return re.sub(
                   r"([_*\[\]()~`>#+\-=|{}.!\\])",
                   r"\\\1",
@@ -367,8 +379,6 @@ jobs:
 
           def escape_code(text):
 
-              # Inside Telegram code entities only
-              # backslashes and backticks need escaping.
               text = str(text)
 
               text = text.replace("\\", "\\\\")
@@ -378,8 +388,11 @@ jobs:
 
           def escape_url(url):
 
-              # Telegram MarkdownV2 URL escaping.
-              return str(url).replace("\\", "\\\\").replace(")", "\\)")
+              return (
+                  str(url)
+                  .replace("\\", "\\\\")
+                  .replace(")", "\\)")
+              )
 
           # ============================================================
           # TRUNCATION
@@ -455,12 +468,18 @@ jobs:
           log("Starting macOS runner image watcher")
           log("=" * 60)
 
+          log(f"Force notify: {'ENABLED' if FORCE_NOTIFY else 'DISABLED'}")
+
+          if FORCE_NOTIFY:
+              log("All tracked images will be notified regardless of state")
+
           releases = get_releases()
 
           log(f"Total releases retrieved: {len(releases)}")
 
           changed = 0
           failed = 0
+          skipped = 0
 
           for prefix in PREFIXES:
 
@@ -477,6 +496,7 @@ jobs:
 
               if not candidates:
                   log(f"{prefix}: no releases found")
+                  skipped += 1
                   continue
 
               latest = max(
@@ -489,11 +509,17 @@ jobs:
               tag = latest["tag_name"]
               old_tag = state.get(prefix, "")
 
-              if tag == old_tag:
-                  log(f"{prefix}: already up to date ({tag})")
+              if tag == old_tag and not FORCE_NOTIFY:
+                  log(
+                      f"{prefix}: already up to date ({tag})"
+                  )
+                  skipped += 1
                   continue
 
-              log(f"New release: {tag}")
+              if FORCE_NOTIFY:
+                  log(f"{prefix}: FORCE notification for {tag}")
+              else:
+                  log(f"New release: {tag}")
 
               url = latest.get("html_url", "")
               body = latest.get("body") or ""
@@ -518,6 +544,9 @@ jobs:
                   + escape_code(tag)
                   + "`"
               )
+
+              if FORCE_NOTIFY:
+                  message += "\n\n🔄 _Forced notification_"
 
               # --------------------------------------------------------
               # ADDED
@@ -596,7 +625,9 @@ jobs:
 
                   changed += 1
 
-                  log(f"Successfully delivered: {tag}")
+                  log(
+                      f"Successfully delivered: {tag}"
+                  )
 
               except Exception as error:
 
@@ -615,7 +646,8 @@ jobs:
           log("=" * 60)
 
           log(f"Tracked images: {len(PREFIXES)}")
-          log(f"New notifications: {changed}")
+          log(f"Notifications sent: {changed}")
+          log(f"Skipped images: {skipped}")
           log(f"Failed notifications: {failed}")
 
           if failed:
