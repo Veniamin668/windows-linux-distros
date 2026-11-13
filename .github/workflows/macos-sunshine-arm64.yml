@@ -123,7 +123,7 @@ jobs:
           echo "Проверяем статус SSH..."
           sudo launchctl list | grep sshd || true
 
-      - name: Russian-RU PC layout, Yekaterinburg time, 24h
+      - name: Yekaterinburg time, 24h
         shell: zsh {0}
         run: |
           # timezone
@@ -132,12 +132,6 @@ jobs:
 
           # 24h clock + RU language/region
           defaults write -g AppleICUForce24HourTime -bool true
-
-          # layouts: ABC + Russian - PC
-          ABC='<dict><key>InputSourceKind</key><string>Keyboard Layout</string><key>KeyboardLayout ID</key><integer>252</integer><key>KeyboardLayout Name</key><string>ABC</string></dict>'
-          RUS='<dict><key>InputSourceKind</key><string>Keyboard Layout</string><key>KeyboardLayout ID</key><integer>19458</integer><key>KeyboardLayout Name</key><string>RussianWin</string></dict>'
-          defaults write com.apple.HIToolbox AppleEnabledInputSources -array "$ABC" "$RUS"
-          defaults write com.apple.HIToolbox AppleSelectedInputSources -array "$ABC"
 
           # input source hotkeys (written BEFORE the restarts so they get picked up)
           # 60 = previous input source (Ctrl+Space), 61 = next source in Input menu (Ctrl+Opt+Space)
