@@ -1,0 +1,71 @@
+name: Watch runner-images macos updates
+
+on:
+  schedule:
+    - cron: '0 6 * * *'   # раз в день
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  watch:
+    runs-on: ubuntu-latest   # дешёвый раннер, macOS-минуты не тратим
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check for new runner-images releases
+        env:
+          TG_BOT_TOKEN: ${{ secrets.TG_BOT_TOKEN }}
+          TG_CHAT_ID: ${{ secrets.TG_CHAT_ID }}
+        run: |
+          set -uo pipefail
+          STATE=".github/image-watch-state.json"
+          mkdir -p "$(dirname "$STATE")"
+          [ -f "$STATE" ] || echo '{}' > "$STATE"
+
+          # Какие образы отслеживаем. Префиксы - это начало тега релиза в runner-images.
+          # Проверены: xcode-27-arm64, macos-26-arm64. macos-15 и macos-26-intel
+          # нужно свериться самому: открой https://github.com/actions/runner-images/releases
+          # и посмотри, как именно называется тег для твоего образа.
+          PREFIXES=("xcode-27-arm64" "macos-26-arm64" "macos-15-arm64")
+
+          ALL=$(curl -s "https://api.github.com/repos/actions/runner-images/releases?per_page=100")
+          CHANGED=0
+
+          for P in "${PREFIXES[@]}"; do
+            REL=$(echo "$ALL" | jq -c --arg p "$P/" '[.[] | select(.tag_name|startswith($p))] | sort_by(.published_at) | last')
+            [ "$REL" = "null" ] && continue
+
+            TAG=$(echo "$REL" | jq -r '.tag_name')
+            URL=$(echo "$REL" | jq -r '.html_url')
+            OLD_TAG=$(jq -r --arg p "$P" '.[$p] // ""' "$STATE")
+
+            [ "$TAG" = "$OLD_TAG" ] && continue   # уже сообщали про этот релиз
+            CHANGED=1
+
+            BODY=$(echo "$REL" | jq -r '.body')
+            ADDED=$(awk '/^#+[[:space:]]*Added/{f=1;next}/^#+[[:space:]]/{f=0}f&&NF' <<< "$BODY")
+            DELETED=$(awk '/^#+[[:space:]]*Deleted/{f=1;next}/^#+[[:space:]]/{f=0}f&&NF' <<< "$BODY")
+
+            MSG="🖼 <b>$P обновился</b>: <code>$TAG</code>"
+            [ -n "$ADDED" ]   && MSG="$MSG"$'\n\n'"➕ Added:"$'\n'"$(echo "$ADDED" | head -c 1200)"
+            [ -n "$DELETED" ] && MSG="$MSG"$'\n\n'"➖ Deleted:"$'\n'"$(echo "$DELETED" | head -c 1200)"
+            [ -z "$ADDED$DELETED" ] && MSG="$MSG"$'\n'"(обычный апдейт версий, без новых/удалённых пакетов)"
+            MSG="$MSG"$'\n\n'"$URL"
+
+            curl -s --max-time 15 "https://api.telegram.org/bot${TG_BOT_TOKEN}/sendMessage" \
+              --data-urlencode "chat_id=${TG_CHAT_ID}" \
+              --data-urlencode "disable_web_page_preview=true" \
+              --data-urlencode "text=${MSG}" > /dev/null || true
+
+            jq --arg p "$P" --arg t "$TAG" '.[$p]=$t' "$STATE" > "$STATE.tmp" && mv "$STATE.tmp" "$STATE"
+          done
+
+          if [ "$CHANGED" = "1" ]; then
+            git config user.name "image-watch-bot"
+            git config user.email "actions@users.noreply.github.com"
+            git add "$STATE"
+            git commit -m "image-watch: update last-seen release tags" || true
+            git push || true
+          fi
