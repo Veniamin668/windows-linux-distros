@@ -133,8 +133,12 @@ jobs:
           # 24h clock + RU language/region
           defaults write -g AppleICUForce24HourTime -bool true
           defaults write -g AppleLocale -string "ru_RU"
-          defaults write -g AppleLanguages -array "ru-RU" "en-US"
+          defaults write -g AppleLanguages -array "ru" "en-US"
           defaults write com.apple.Spotlight AppleLanguages -array "ru-RU" "en-US"
+          defaults delete com.apple.Spotlight AppleLanguages 2>/dev/null || true
+          sudo languagesetup -langspec ru 2>/dev/null || true
+          sudo defaults write /Library/Preferences/.GlobalPreferences AppleLanguages -array "ru" "en-US"
+          sudo defaults write /Library/Preferences/.GlobalPreferences AppleLocale -string "ru_RU"
 
           # layouts: ABC + Russian - PC
           ABC='<dict><key>InputSourceKind</key><string>Keyboard Layout</string><key>KeyboardLayout ID</key><integer>252</integer><key>KeyboardLayout Name</key><string>ABC</string></dict>'
@@ -154,6 +158,7 @@ jobs:
           killall cfprefsd 2>/dev/null || true
           sudo killall cfprefsd 2>/dev/null || true
           /System/Library/PrivateFrameworks/SystemAdministration.framework/Resources/activateSettings -u 2>/dev/null || true
+          /System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister -kill -r -domain local -domain system -domain user 2>/dev/null || true
           killall Finder Dock SystemUIServer ControlCenter TextInputMenuAgent 2>/dev/null || true
           killall -9 Spotlight corespotlightd suggestd parsecd siriknowledged 2>/dev/null || true
 
