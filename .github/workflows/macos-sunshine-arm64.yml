@@ -276,9 +276,37 @@ jobs:
           echo " http://$TS_IP:5902/"
           echo "======================================================================"
 
+      - name: 📨 Notify Telegram (ready)
+        env:
+          TG_BOT_TOKEN: ${{ secrets.TG_BOT_TOKEN }}
+          TG_CHAT_ID: ${{ secrets.TG_CHAT_ID }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          TS_IP=$(tailscale ip -4 2>/dev/null | head -1)
+          FREE=$(df -h /System/Volumes/Data | tail -1 | awk '{print $4}')
+          TEXT=$(printf '🟢 <b>macOS раннер поднят</b>\nmacOS %s · %s\nTailscale: <code>%s</code>\nSunshine pair: http://%s:5902/\nСвободно: %s\n<a href="%s">Запуск в Actions</a>' \
+            "$(sw_vers -productVersion)" "$(uname -m)" "$TS_IP" "$TS_IP" "$FREE" "$RUN_URL")
+          curl -s --max-time 15 "https://api.telegram.org/bot${TG_BOT_TOKEN}/sendMessage" \
+            --data-urlencode "chat_id=${TG_CHAT_ID}" \
+            --data-urlencode "parse_mode=HTML" \
+            --data-urlencode "disable_web_page_preview=true" \
+            --data-urlencode "text=${TEXT}" > /dev/null || true
+            
       - name: 3. Wait session (6 hours)
         run: |
           echo "Всё поднято, держим сессию..."
           while true; do
             sleep 60
           done
+
+      - name: 📨 Notify Telegram (stopped)
+        if: always()
+        env:
+          TG_BOT_TOKEN: ${{ secrets.TG_BOT_TOKEN }}
+          TG_CHAT_ID: ${{ secrets.TG_CHAT_ID }}
+          STATUS: ${{ job.status }}
+        run: |
+          curl -s --max-time 15 "https://api.telegram.org/bot${TG_BOT_TOKEN}/sendMessage" \
+            --data-urlencode "chat_id=${TG_CHAT_ID}" \
+            --data-urlencode "text=🔴 Раннер остановлен (${STATUS})" > /dev/null || true
+            
