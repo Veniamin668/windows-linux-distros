@@ -28,6 +28,7 @@ jobs:
 
     steps:
       - name: Checkout repository
+        id: checkout
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
@@ -41,11 +42,15 @@ jobs:
         run: |
           set -euo pipefail
 
+          echo "[watcher] Initializing..."
+
           mkdir -p .github
 
           STATE=".github/image-watch-state.json"
 
-          [ -f "$STATE" ] || printf '{}\n' > "$STATE"
+          if [ ! -f "$STATE" ]; then
+            printf '{}\n' > "$STATE"
+          fi
 
           python3 - <<'PY'
           import json
@@ -83,15 +88,14 @@ jobs:
           TG_CHAT = os.environ.get("TG_CHAT_ID", "")
 
           FORCE_NOTIFY = (
-              os.environ.get("FORCE_NOTIFY", "false").lower()
+              os.environ.get("FORCE_NOTIFY", "").lower()
               == "true"
           )
 
-          # Telegram maximum is 4096 characters per message.
-          # Keep a safe margin for MarkdownV2 and headers.
-          TELEGRAM_CHUNK_SIZE = 2800
+          # Conservative raw-text limit to leave room for
+          # MarkdownV2 escaping and Telegram message headers.
+          CHUNK_SIZE = 1700
 
-          # Avoid flooding group chats with multipart releases.
           TELEGRAM_DELAY = 3.1
 
           if not GH_TOKEN:
@@ -108,16 +112,18 @@ jobs:
               print(f"[watcher] {message}", flush=True)
 
           # ============================================================
-          # HTTP
+          # HTTP REQUESTS
           # ============================================================
 
           def request_json(url, data=None, headers=None):
+
               headers = headers or {}
 
               for attempt in range(4):
 
                   try:
-                      req = urllib.request.Request(
+
+                      request = urllib.request.Request(
                           url,
                           data=data,
                           headers=headers,
@@ -125,7 +131,7 @@ jobs:
                       )
 
                       with urllib.request.urlopen(
-                          req,
+                          request,
                           timeout=45
                       ) as response:
 
@@ -144,7 +150,7 @@ jobs:
                           try:
                               delay = int(retry_after)
                           except (TypeError, ValueError):
-                              delay = min(2 ** attempt * 3, 30)
+                              delay = min(3 * (2 ** attempt), 30)
 
                           if attempt == 3:
                               raise
@@ -168,7 +174,7 @@ jobs:
                       if attempt == 3:
                           raise
 
-                      delay = min(2 ** attempt * 3, 30)
+                      delay = min(3 * (2 ** attempt), 30)
 
                       log(
                           f"Network error: {error}; "
@@ -180,7 +186,7 @@ jobs:
               raise RuntimeError("HTTP request failed")
 
           # ============================================================
-          # GITHUB RELEASES
+          # FETCH ALL RELEASES
           # ============================================================
 
           def get_releases():
@@ -210,7 +216,7 @@ jobs:
                   releases.extend(data)
 
                   log(
-                      f"Fetched release page {page}: "
+                      f"Fetched page {page}: "
                       f"{len(data)} releases"
                   )
 
@@ -222,120 +228,198 @@ jobs:
               return releases
 
           # ============================================================
-          # HTML -> TEXT CONVERTER
+          # HTML PARSER
+          # Handles HTML tables, lists, links and block elements.
           # ============================================================
 
           class ReleaseHTMLParser(HTMLParser):
 
               BLOCK_TAGS = {
-                  "p", "div", "section",
-                  "article", "h1", "h2",
-                  "h3", "h4", "h5", "h6",
-                  "ul", "ol", "li",
-                  "blockquote", "details",
-                  "summary", "br"
+                  "p", "div", "section", "article",
+                  "h1", "h2", "h3", "h4", "h5", "h6",
+                  "ul", "ol", "li", "blockquote",
+                  "details", "summary", "br", "hr"
               }
 
               def __init__(self):
+
                   super().__init__(convert_charrefs=True)
 
                   self.output = []
-                  self.table_rows = []
-                  self.table_row = []
-                  self.table_cell = []
+
+                  self.rows = []
+                  self.row = []
+                  self.cell = []
+
                   self.in_table = False
-                  self.in_row = False
                   self.in_cell = False
+
+                  self.links = []
+                  self.ignored = 0
 
               def newline(self):
 
-                  if self.output and not self.output[-1].endswith("\n"):
+                  if self.in_cell:
+                      return
+
+                  if self.output and self.output[-1] != "\n":
                       self.output.append("\n")
 
+              def write(self, value):
+
+                  if not value:
+                      return
+
+                  if self.in_cell:
+                      self.cell.append(value)
+                  else:
+                      self.output.append(value)
+
               def handle_starttag(self, tag, attrs):
+
+                  attrs = dict(attrs)
+
+                  if tag in ("script", "style"):
+                      self.ignored += 1
+                      return
+
+                  if self.ignored:
+                      return
 
                   if tag == "table":
 
                       self.newline()
+
                       self.in_table = True
-                      self.table_rows = []
+                      self.rows = []
 
                   elif tag == "tr" and self.in_table:
 
-                      self.in_row = True
-                      self.table_row = []
+                      self.row = []
 
                   elif tag in ("td", "th") and self.in_table:
 
                       self.in_cell = True
-                      self.table_cell = []
+                      self.cell = []
+
+                  elif tag == "a":
+
+                      self.links.append(
+                          attrs.get("href", "")
+                      )
+
+                  elif tag == "img":
+
+                      self.write(
+                          attrs.get("alt", "")
+                      )
 
                   elif tag == "br":
 
                       if self.in_cell:
-                          self.table_cell.append(" ")
+                          self.cell.append(" ")
                       else:
                           self.newline()
 
-                  elif tag in self.BLOCK_TAGS and not self.in_cell:
+                  elif tag == "hr":
+
+                      self.newline()
+                      self.write("---")
+                      self.newline()
+
+                  elif tag == "li" and not self.in_cell:
+
+                      self.newline()
+                      self.write("- ")
+
+                  elif tag in self.BLOCK_TAGS:
 
                       self.newline()
 
               def handle_data(self, data):
 
-                  if self.in_cell:
-                      self.table_cell.append(data)
+                  if self.ignored:
+                      return
 
-                  else:
-                      self.output.append(data)
+                  self.write(data)
 
               def handle_endtag(self, tag):
 
-                  if tag in ("td", "th") and self.in_cell:
+                  if tag in ("script", "style"):
 
-                      value = " ".join(
-                          "".join(self.table_cell).split()
+                      self.ignored = max(
+                          0,
+                          self.ignored - 1
                       )
 
-                      self.table_row.append(value)
+                      return
 
-                      self.table_cell = []
+                  if self.ignored:
+                      return
+
+                  if tag == "a":
+
+                      if self.links:
+
+                          url = self.links.pop()
+
+                          if url and url.startswith(
+                              ("https://", "http://")
+                          ):
+
+                              self.write(
+                                  f" — {url}"
+                              )
+
+                  elif tag in ("td", "th") and self.in_cell:
+
+                      value = " ".join(
+                          "".join(self.cell).split()
+                      )
+
+                      if value:
+                          self.row.append(value)
+
+                      self.cell = []
                       self.in_cell = False
 
                   elif tag == "tr" and self.in_table:
 
-                      if self.table_row:
-                          self.table_rows.append(self.table_row)
+                      if self.row:
+                          self.rows.append(self.row)
 
-                      self.table_row = []
-                      self.in_row = False
+                      self.row = []
 
                   elif tag == "table":
 
-                      for row in self.table_rows:
+                      for row in self.rows:
 
-                          values = [
-                              value for value in row if value
+                          cells = [
+                              " ".join(str(cell).split())
+                              for cell in row
+                              if str(cell).strip()
                           ]
 
-                          if values:
+                          if cells:
 
                               self.output.append(
-                                  "\n" + " | ".join(values) + "\n"
+                                  "\n"
+                                  + " | ".join(cells)
+                                  + "\n"
                               )
 
                       self.in_table = False
                       self.newline()
 
-                  elif tag in self.BLOCK_TAGS and not self.in_cell:
+                  elif tag in self.BLOCK_TAGS:
 
                       self.newline()
 
           # ============================================================
-          # MARKDOWN TABLES
+          # MARKDOWN TABLE PROCESSING
           # ============================================================
 
-          def is_separator_row(line):
+          def is_table_separator(line):
 
               cells = [
                   cell.strip()
@@ -347,20 +431,24 @@ jobs:
                   for cell in cells
               )
 
-          def convert_markdown_tables(text):
+          def normalize_markdown_tables(text):
 
-              output = []
+              result = []
 
               for line in text.splitlines():
 
                   stripped = line.strip()
+
+                  if not stripped:
+                      result.append("")
+                      continue
 
                   if (
                       stripped.startswith("|")
                       and stripped.endswith("|")
                   ):
 
-                      if is_separator_row(stripped):
+                      if is_table_separator(stripped):
                           continue
 
                       cells = [
@@ -368,18 +456,20 @@ jobs:
                           for cell in stripped.strip("|").split("|")
                       ]
 
+                      cells = [
+                          cell for cell in cells if cell
+                      ]
+
                       if cells:
-                          output.append(
-                              " | ".join(cells)
-                          )
+                          result.append(" | ".join(cells))
 
                   else:
-                      output.append(line)
+                      result.append(line)
 
-              return "\n".join(output)
+              return "\n".join(result)
 
           # ============================================================
-          # MARKDOWN NORMALIZATION
+          # RELEASE BODY NORMALIZATION
           # ============================================================
 
           def normalize_release_body(body):
@@ -387,8 +477,8 @@ jobs:
               if not body:
                   return "No release description provided."
 
-              # Convert HTML tables and block elements.
               parser = ReleaseHTMLParser()
+
               parser.feed(body)
               parser.close()
 
@@ -401,63 +491,112 @@ jobs:
                   text
               )
 
+              # Decode HTML entities.
               text = html.unescape(text)
 
-              # Images -> descriptive text.
+              # Normalize invisible Unicode spaces.
+              text = (
+                  text.replace("\u00a0", " ")
+                  .replace("\u2000", " ")
+                  .replace("\u2001", " ")
+                  .replace("\u2002", " ")
+                  .replace("\u2003", " ")
+                  .replace("\u2004", " ")
+                  .replace("\u2005", " ")
+                  .replace("\u2006", " ")
+                  .replace("\u2007", " ")
+                  .replace("\u2008", " ")
+                  .replace("\u2009", " ")
+                  .replace("\u200a", " ")
+                  .replace("\u202f", " ")
+                  .replace("\u205f", " ")
+                  .replace("\u3000", " ")
+                  .replace("\u200b", "")
+                  .replace("\ufeff", "")
+              )
+
+              # Remove image syntax but preserve alt text.
               text = re.sub(
                   r"!\[([^\]]*)\]\([^)]+\)",
                   r"\1",
                   text
               )
 
-              # Links -> label + URL.
+              # Convert Markdown links exactly once.
+              # Result: readable label and original URL.
               text = re.sub(
-                  r"\[([^\]]+)\]\((https?://[^)]+)\)",
-                  r"\1 (\2)",
+                  r"\[([^\]]+)\]\((https?://[^)\s]+)\)",
+                  r"\1 — \2",
                   text
               )
 
-              # Autolinks.
+              # Convert autolinks.
               text = re.sub(
                   r"<(https?://[^>]+)>",
                   r"\1",
                   text
               )
 
-              # Markdown tables.
-              text = convert_markdown_tables(text)
+              # Normalize Markdown tables.
+              text = normalize_markdown_tables(text)
 
-              # Preserve headings as readable plain text.
-              text = re.sub(
-                  r"(?m)^\s{0,3}#{1,6}\s*",
-                  "",
-                  text
-              )
+              lines = []
 
-              # Remove inline formatting markers.
-              text = re.sub(
-                  r"(\*\*|__|~~|`)",
-                  "",
-                  text
-              )
+              for line in text.splitlines():
 
-              # Clean excessive whitespace.
-              text = re.sub(
-                  r"[ \t]+",
-                  " ",
-                  text
-              )
+                  # Decode any remaining entities.
+                  line = html.unescape(line)
 
-              text = re.sub(
-                  r"\n[ \t]*\n[ \t]*\n+",
-                  "\n\n",
-                  text
-              )
+                  # Remove invisible spacing artifacts.
+                  line = re.sub(
+                      r"[\u200b\ufeff]",
+                      "",
+                      line
+                  )
 
-              return text.strip()
+                  # Normalize whitespace without destroying
+                  # the actual content.
+                  line = re.sub(
+                      r"[ \t]+",
+                      " ",
+                      line
+                  )
+
+                  line = line.strip()
+
+                  # Ignore lines containing only whitespace,
+                  # separators or empty HTML artifacts.
+                  if not line:
+                      lines.append("")
+                      continue
+
+                  if re.fullmatch(
+                      r"(?:&#x20;|&nbsp;|\s|[|]*)+",
+                      line,
+                      flags=re.IGNORECASE
+                  ):
+                      continue
+
+                  lines.append(line)
+
+              # Collapse multiple blank lines into one.
+              cleaned = []
+              previous_blank = False
+
+              for line in lines:
+
+                  blank = not line.strip()
+
+                  if blank and previous_blank:
+                      continue
+
+                  cleaned.append(line)
+                  previous_blank = blank
+
+              return "\n".join(cleaned).strip()
 
           # ============================================================
-          # TELEGRAM MARKDOWNV2
+          # TELEGRAM MARKDOWNV2 ESCAPING
           # ============================================================
 
           def escape_md(text):
@@ -485,7 +624,7 @@ jobs:
               )
 
           # ============================================================
-          # SPLIT LONG RELEASES
+          # SMART TEXT SPLITTING
           # ============================================================
 
           def split_text(text, limit):
@@ -498,7 +637,7 @@ jobs:
 
               for line in text.splitlines():
 
-                  # Handle exceptionally long individual lines.
+                  # Handle unusually long individual lines.
                   while len(line) > limit:
 
                       if current:
@@ -526,7 +665,9 @@ jobs:
               if current:
                   chunks.append(current)
 
-              return chunks or ["No release description provided."]
+              return chunks or [
+                  "No release description provided."
+              ]
 
           # ============================================================
           # TELEGRAM API
@@ -576,13 +717,18 @@ jobs:
           def build_messages(release, prefix, force):
 
               tag = release.get("tag_name", "unknown")
-              title = release.get("name") or tag
+
+              title = (
+                  release.get("name")
+                  or tag
+              )
 
               url = release.get("html_url", "")
 
               published = release.get("published_at", "")
-              draft = release.get("draft", False)
+
               prerelease = release.get("prerelease", False)
+              draft = release.get("draft", False)
 
               body = normalize_release_body(
                   release.get("body") or ""
@@ -590,7 +736,7 @@ jobs:
 
               parts = split_text(
                   body,
-                  TELEGRAM_CHUNK_SIZE
+                  CHUNK_SIZE
               )
 
               messages = []
@@ -607,7 +753,9 @@ jobs:
                   )
 
                   if force:
-                      header += "\n\n🔄 _Forced notification_"
+                      header += (
+                          "\n\n🔄 _Forced notification_"
+                      )
 
                   if prerelease:
                       header += "\n🧪 _Pre\\-release_"
@@ -628,6 +776,7 @@ jobs:
                   )
 
                   if len(parts) > 1:
+
                       header += (
                           "\n📄 Part "
                           + str(index)
@@ -654,7 +803,7 @@ jobs:
               return messages
 
           # ============================================================
-          # DELIVER COMPLETE RELEASE
+          # SEND COMPLETE RELEASE
           # ============================================================
 
           def deliver_release(release, prefix, force):
@@ -668,21 +817,25 @@ jobs:
               total = len(messages)
 
               log(
-                  f"{prefix}: sending {total} Telegram message(s)"
+                  f"{prefix}: sending {total} message(s)"
               )
 
-              for index, message in enumerate(messages, start=1):
+              for index, message in enumerate(
+                  messages,
+                  start=1
+              ):
 
                   if len(message) > 4096:
+
                       raise RuntimeError(
-                          f"Telegram message too long: "
-                          f"{len(message)} characters"
+                          "Telegram message exceeds 4096 "
+                          f"characters: {len(message)}"
                       )
 
                   send_telegram(message)
 
                   log(
-                      f"{prefix}: delivered part "
+                      f"{prefix}: sent part "
                       f"{index}/{total}"
                   )
 
@@ -712,19 +865,26 @@ jobs:
 
                   file.write("\n")
 
-              os.replace(temporary, STATE)
+              os.replace(
+                  temporary,
+                  STATE
+              )
 
           # ============================================================
           # MAIN
           # ============================================================
 
-          log("=" * 65)
-          log("macOS RUNNER IMAGE RELEASE WATCHER")
-          log("=" * 65)
+          log("=" * 60)
+          log("Starting macOS runner image watcher")
+          log("=" * 60)
 
           log(
-              f"Mode: "
-              f"{'FORCE NOTIFY' if FORCE_NOTIFY else 'NORMAL'}"
+              "Mode: "
+              + (
+                  "FORCE NOTIFY"
+                  if FORCE_NOTIFY
+                  else "NORMAL"
+              )
           )
 
           with open(
@@ -736,7 +896,7 @@ jobs:
               state = json.load(file)
 
           if not isinstance(state, dict):
-              raise RuntimeError("Invalid state file")
+              raise RuntimeError("Invalid watcher state")
 
           releases = get_releases()
 
@@ -754,7 +914,8 @@ jobs:
                   release
                   for release in releases
                   if isinstance(
-                      release.get("tag_name"), str
+                      release.get("tag_name"),
+                      str
                   )
                   and release["tag_name"].startswith(
                       prefix + "/"
@@ -779,7 +940,6 @@ jobs:
               )
 
               tag = latest["tag_name"]
-
               old_tag = state.get(prefix, "")
 
               if tag == old_tag and not FORCE_NOTIFY:
@@ -794,13 +954,13 @@ jobs:
               if FORCE_NOTIFY:
 
                   log(
-                      f"{prefix}: force notification for {tag}"
+                      f"{prefix}: forced notification: {tag}"
                   )
 
               else:
 
                   log(
-                      f"{prefix}: new release detected: {tag}"
+                      f"{prefix}: new release: {tag}"
                   )
 
               try:
@@ -811,7 +971,9 @@ jobs:
                       FORCE_NOTIFY
                   )
 
-                  # Save only after every Telegram part succeeds.
+                  # Update state only after all message parts
+                  # have been successfully delivered.
+
                   state[prefix] = tag
 
                   save_state(state)
@@ -819,7 +981,7 @@ jobs:
                   sent += 1
 
                   log(
-                      f"{prefix}: complete release delivered"
+                      f"{prefix}: release delivered successfully"
                   )
 
               except Exception as error:
@@ -834,30 +996,35 @@ jobs:
           # SUMMARY
           # ============================================================
 
-          log("=" * 65)
+          log("=" * 60)
           log("WATCHER SUMMARY")
-          log("=" * 65)
+          log("=" * 60)
 
           log(f"Tracked images: {len(PREFIXES)}")
           log(f"Successfully delivered: {sent}")
           log(f"Skipped: {skipped}")
           log(f"Failed: {failed}")
 
-          log("=" * 65)
+          log("=" * 60)
 
           if failed:
               sys.exit(1)
 
-          log("All operations completed successfully")
+          log("Watcher completed successfully")
 
           PY
 
       - name: Commit updated watcher state
-        if: always()
+        if: always() && steps.checkout.outcome == 'success'
         run: |
           set -euo pipefail
 
           STATE=".github/image-watch-state.json"
+
+          if [ ! -f "$STATE" ]; then
+            echo "State file does not exist."
+            exit 0
+          fi
 
           git config user.name "image-watch-bot"
           git config user.email "actions@users.noreply.github.com"
