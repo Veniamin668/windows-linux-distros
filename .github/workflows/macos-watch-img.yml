@@ -1,71 +1,648 @@
-name: Watch runner-images macos updates
+
+name: Watch runner-images macOS updates
 
 on:
   schedule:
-    - cron: '0 6 * * *'   # раз в день
+    - cron: '0 6 * * *'
   workflow_dispatch:
 
 permissions:
   contents: write
 
+concurrency:
+  group: runner-images-watcher
+  cancel-in-progress: false
+
 jobs:
   watch:
-    runs-on: ubuntu-latest   # дешёвый раннер, macOS-минуты не тратим
+    name: Watch macOS runner images
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - name: Check for new runner-images releases
         env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TG_BOT_TOKEN: ${{ secrets.TG_BOT_TOKEN }}
           TG_CHAT_ID: ${{ secrets.TG_CHAT_ID }}
         run: |
-          set -uo pipefail
+          set -euo pipefail
+
           STATE=".github/image-watch-state.json"
-          mkdir -p "$(dirname "$STATE")"
-          [ -f "$STATE" ] || echo '{}' > "$STATE"
 
-          # Какие образы отслеживаем. Префиксы - это начало тега релиза в runner-images.
-          # Проверены: xcode-27-arm64, macos-26-arm64. macos-15 и macos-26-intel
-          # нужно свериться самому: открой https://github.com/actions/runner-images/releases
-          # и посмотри, как именно называется тег для твоего образа.
-          PREFIXES=("xcode-27-arm64" "macos-26-arm64" "macos-15-arm64")
+          mkdir -p .github
+          [ -f "$STATE" ] || printf '{}\n' > "$STATE"
 
-          ALL=$(curl -s "https://api.github.com/repos/actions/runner-images/releases?per_page=100")
-          CHANGED=0
+          python3 - <<'PY'
+          import json
+          import os
+          import re
+          import sys
+          import time
+          import html
+          import urllib.request
+          import urllib.parse
+          import urllib.error
 
-          for P in "${PREFIXES[@]}"; do
-            REL=$(echo "$ALL" | jq -c --arg p "$P/" '[.[] | select(.tag_name|startswith($p))] | sort_by(.published_at) | last')
-            [ "$REL" = "null" ] && continue
+          from html.parser import HTMLParser
 
-            TAG=$(echo "$REL" | jq -r '.tag_name')
-            URL=$(echo "$REL" | jq -r '.html_url')
-            OLD_TAG=$(jq -r --arg p "$P" '.[$p] // ""' "$STATE")
+          # ============================================================
+          # CONFIGURATION
+          # ============================================================
 
-            [ "$TAG" = "$OLD_TAG" ] && continue   # уже сообщали про этот релиз
-            CHANGED=1
+          API = "https://api.github.com/repos/actions/runner-images/releases"
+          STATE = ".github/image-watch-state.json"
 
-            BODY=$(echo "$REL" | jq -r '.body')
-            ADDED=$(awk '/^#+[[:space:]]*Added/{f=1;next}/^#+[[:space:]]/{f=0}f&&NF' <<< "$BODY")
-            DELETED=$(awk '/^#+[[:space:]]*Deleted/{f=1;next}/^#+[[:space:]]/{f=0}f&&NF' <<< "$BODY")
+          PREFIXES = [
+              "xcode-27-arm64",
+              "macos-26-arm64",
+              "macos-15-arm64",
+              "macos-26-intel",
+          ]
 
-            MSG="🖼 <b>$P обновился</b>: <code>$TAG</code>"
-            [ -n "$ADDED" ]   && MSG="$MSG"$'\n\n'"➕ Added:"$'\n'"$(echo "$ADDED" | head -c 1200)"
-            [ -n "$DELETED" ] && MSG="$MSG"$'\n\n'"➖ Deleted:"$'\n'"$(echo "$DELETED" | head -c 1200)"
-            [ -z "$ADDED$DELETED" ] && MSG="$MSG"$'\n'"(обычный апдейт версий, без новых/удалённых пакетов)"
-            MSG="$MSG"$'\n\n'"$URL"
+          GH_TOKEN = os.environ.get("GH_TOKEN", "")
+          TG_TOKEN = os.environ.get("TG_BOT_TOKEN", "")
+          TG_CHAT = os.environ.get("TG_CHAT_ID", "")
 
-            curl -s --max-time 15 "https://api.telegram.org/bot${TG_BOT_TOKEN}/sendMessage" \
-              --data-urlencode "chat_id=${TG_CHAT_ID}" \
-              --data-urlencode "disable_web_page_preview=true" \
-              --data-urlencode "text=${MSG}" > /dev/null || true
+          if not GH_TOKEN:
+              sys.exit("ERROR: GITHUB_TOKEN is missing")
 
-            jq --arg p "$P" --arg t "$TAG" '.[$p]=$t' "$STATE" > "$STATE.tmp" && mv "$STATE.tmp" "$STATE"
-          done
+          if not TG_TOKEN or not TG_CHAT:
+              sys.exit("ERROR: Telegram secrets are missing")
 
-          if [ "$CHANGED" = "1" ]; then
-            git config user.name "image-watch-bot"
-            git config user.email "actions@users.noreply.github.com"
-            git add "$STATE"
-            git commit -m "image-watch: update last-seen release tags" || true
-            git push || true
+          # ============================================================
+          # LOGGING
+          # ============================================================
+
+          def log(message):
+              print(f"[watcher] {message}", flush=True)
+
+          # ============================================================
+          # HTTP REQUESTS
+          # ============================================================
+
+          def request_json(url, data=None, headers=None):
+              headers = headers or {}
+
+              for attempt in range(4):
+                  try:
+                      req = urllib.request.Request(
+                          url,
+                          data=data,
+                          headers=headers,
+                          method="POST" if data is not None else "GET"
+                      )
+
+                      with urllib.request.urlopen(
+                          req,
+                          timeout=30
+                      ) as response:
+
+                          return json.loads(
+                              response.read().decode("utf-8")
+                          )
+
+                  except urllib.error.HTTPError as error:
+
+                      if error.code == 429 or error.code >= 500:
+                          retry_after = error.headers.get("Retry-After")
+
+                          try:
+                              delay = int(retry_after)
+                          except (TypeError, ValueError):
+                              delay = min(2 ** attempt * 2, 30)
+
+                          if attempt == 3:
+                              raise
+
+                          log(
+                              f"HTTP {error.code}; "
+                              f"retrying in {delay}s"
+                          )
+
+                          time.sleep(delay)
+                          continue
+
+                      raise
+
+                  except (
+                      urllib.error.URLError,
+                      TimeoutError,
+                      OSError
+                  ) as error:
+
+                      if attempt == 3:
+                          raise
+
+                      delay = min(2 ** attempt * 2, 30)
+
+                      log(
+                          f"Network error: {error}; "
+                          f"retrying in {delay}s"
+                      )
+
+                      time.sleep(delay)
+
+              raise RuntimeError("HTTP request failed")
+
+          # ============================================================
+          # GITHUB RELEASE API
+          # ============================================================
+
+          def get_releases():
+              releases = []
+              page = 1
+
+              while True:
+                  url = f"{API}?per_page=100&page={page}"
+
+                  data = request_json(
+                      url,
+                      headers={
+                          "Authorization": f"Bearer {GH_TOKEN}",
+                          "Accept": "application/vnd.github+json",
+                          "X-GitHub-Api-Version": "2022-11-28",
+                          "User-Agent": "runner-images-watcher"
+                      }
+                  )
+
+                  if not isinstance(data, list):
+                      raise RuntimeError(
+                          "Unexpected GitHub API response"
+                      )
+
+                  releases.extend(data)
+
+                  log(
+                      f"Fetched page {page}: "
+                      f"{len(data)} releases"
+                  )
+
+                  if len(data) < 100:
+                      break
+
+                  page += 1
+
+              return releases
+
+          # ============================================================
+          # RELEASE BODY PARSER
+          # ============================================================
+
+          def extract_section(body, section):
+              lines = body.splitlines()
+
+              collecting = False
+              result = []
+
+              for line in lines:
+
+                  heading = re.match(
+                      r"^\s{0,3}#{1,6}\s+(.+?)\s*#*\s*$",
+                      line
+                  )
+
+                  if heading:
+                      title = heading.group(1).strip()
+
+                      if re.match(
+                          rf"^{re.escape(section)}(?:\s|$|[:\-])",
+                          title,
+                          re.IGNORECASE
+                      ):
+                          collecting = True
+                          continue
+
+                      if collecting:
+                          break
+
+                  if collecting:
+                      result.append(line)
+
+              return "\n".join(result).strip()
+
+          # ============================================================
+          # HTML TABLE -> READABLE TEXT
+          # ============================================================
+
+          class TableParser(HTMLParser):
+
+              def __init__(self):
+                  super().__init__()
+
+                  self.rows = []
+                  self.row = []
+                  self.cell = []
+                  self.in_cell = False
+
+              def handle_starttag(self, tag, attrs):
+
+                  if tag == "tr":
+                      self.row = []
+
+                  elif tag in ("td", "th"):
+                      self.cell = []
+                      self.in_cell = True
+
+                  elif tag == "br" and self.in_cell:
+                      self.cell.append(" ")
+
+              def handle_data(self, data):
+
+                  if self.in_cell:
+                      self.cell.append(data)
+
+              def handle_endtag(self, tag):
+
+                  if tag in ("td", "th") and self.in_cell:
+
+                      value = " ".join(
+                          "".join(self.cell).split()
+                      )
+
+                      self.row.append(value)
+                      self.cell = []
+                      self.in_cell = False
+
+                  elif tag == "tr":
+
+                      if self.row:
+                          self.rows.append(self.row)
+
+                      self.row = []
+
+          def normalize_section(content):
+
+              if not content:
+                  return ""
+
+              # HTML tables.
+              if re.search(r"<table\b", content, re.I):
+
+                  parser = TableParser()
+                  parser.feed(content)
+                  parser.close()
+
+                  rows = parser.rows
+
+                  if not rows:
+                      return ""
+
+                  # Remove table header.
+                  if rows and any(
+                      cell.lower() in (
+                          "category",
+                          "tool name",
+                          "previous",
+                          "current"
+                      )
+                      for cell in rows[0]
+                  ):
+                      rows = rows[1:]
+
+                  result = []
+
+                  for row in rows:
+
+                      values = [
+                          value for value in row if value
+                      ]
+
+                      if values:
+                          result.append(
+                              "• " + " | ".join(values)
+                          )
+
+                  return "\n".join(result)
+
+              # Markdown tables.
+              lines = []
+
+              for line in content.splitlines():
+
+                  line = line.strip()
+
+                  if not line:
+                      continue
+
+                  if line.startswith("|") and line.endswith("|"):
+
+                      cells = [
+                          cell.strip()
+                          for cell in line.strip("|").split("|")
+                      ]
+
+                      if all(
+                          re.fullmatch(r":?-{3,}:?", cell)
+                          for cell in cells
+                      ):
+                          continue
+
+                      lines.append(
+                          "• " + " | ".join(cells)
+                      )
+
+                  else:
+                      lines.append(line)
+
+              return "\n".join(lines)
+
+          # ============================================================
+          # MARKDOWNV2 ESCAPING
+          # ============================================================
+
+          def escape_md(text):
+
+              # Escape MarkdownV2 reserved characters.
+              return re.sub(
+                  r"([_*\[\]()~`>#+\-=|{}.!\\])",
+                  r"\\\1",
+                  str(text)
+              )
+
+          def escape_code(text):
+
+              # Inside Telegram code entities only
+              # backslashes and backticks need escaping.
+              text = str(text)
+
+              text = text.replace("\\", "\\\\")
+              text = text.replace("`", "\\`")
+
+              return text
+
+          def escape_url(url):
+
+              # Telegram MarkdownV2 URL escaping.
+              return str(url).replace("\\", "\\\\").replace(")", "\\)")
+
+          # ============================================================
+          # TRUNCATION
+          # ============================================================
+
+          def shorten(text, limit=1000):
+
+              if len(text) <= limit:
+                  return text
+
+              shortened = text[:limit - 25]
+
+              if "\n" in shortened:
+                  shortened = shortened.rsplit("\n", 1)[0]
+
+              return shortened + "\n... (truncated)"
+
+          # ============================================================
+          # TELEGRAM
+          # ============================================================
+
+          def send_telegram(message):
+
+              url = (
+                  f"https://api.telegram.org/"
+                  f"bot{TG_TOKEN}/sendMessage"
+              )
+
+              payload = urllib.parse.urlencode({
+                  "chat_id": TG_CHAT,
+                  "text": message,
+                  "parse_mode": "MarkdownV2",
+                  "disable_web_page_preview": "true"
+              }).encode("utf-8")
+
+              result = request_json(
+                  url,
+                  data=payload,
+                  headers={
+                      "Content-Type":
+                          "application/x-www-form-urlencoded",
+                      "User-Agent": "runner-images-watcher"
+                  }
+              )
+
+              if not isinstance(result, dict):
+                  raise RuntimeError(
+                      "Unexpected Telegram API response"
+                  )
+
+              if not result.get("ok"):
+                  raise RuntimeError(
+                      f"Telegram API error: {result}"
+                  )
+
+              return result
+
+          # ============================================================
+          # STATE
+          # ============================================================
+
+          with open(STATE, "r", encoding="utf-8") as file:
+              state = json.load(file)
+
+          if not isinstance(state, dict):
+              raise RuntimeError("Invalid state file")
+
+          # ============================================================
+          # MAIN
+          # ============================================================
+
+          log("=" * 60)
+          log("Starting macOS runner image watcher")
+          log("=" * 60)
+
+          releases = get_releases()
+
+          log(f"Total releases retrieved: {len(releases)}")
+
+          changed = 0
+          failed = 0
+
+          for prefix in PREFIXES:
+
+              candidates = [
+                  release
+                  for release in releases
+                  if isinstance(
+                      release.get("tag_name"), str
+                  )
+                  and release["tag_name"].startswith(
+                      prefix + "/"
+                  )
+              ]
+
+              if not candidates:
+                  log(f"{prefix}: no releases found")
+                  continue
+
+              latest = max(
+                  candidates,
+                  key=lambda release: (
+                      release.get("published_at") or ""
+                  )
+              )
+
+              tag = latest["tag_name"]
+              old_tag = state.get(prefix, "")
+
+              if tag == old_tag:
+                  log(f"{prefix}: already up to date ({tag})")
+                  continue
+
+              log(f"New release: {tag}")
+
+              url = latest.get("html_url", "")
+              body = latest.get("body") or ""
+
+              added = normalize_section(
+                  extract_section(body, "Added")
+              )
+
+              deleted = normalize_section(
+                  extract_section(body, "Deleted")
+              )
+
+              # --------------------------------------------------------
+              # MESSAGE HEADER
+              # --------------------------------------------------------
+
+              message = (
+                  "🖼 *"
+                  + escape_md(prefix)
+                  + " обновился*\n"
+                  + "`"
+                  + escape_code(tag)
+                  + "`"
+              )
+
+              # --------------------------------------------------------
+              # ADDED
+              # --------------------------------------------------------
+
+              if added:
+
+                  message += (
+                      "\n\n➕ *Added:*\n"
+                      + escape_md(shorten(added))
+                  )
+
+              # --------------------------------------------------------
+              # DELETED
+              # --------------------------------------------------------
+
+              if deleted:
+
+                  message += (
+                      "\n\n➖ *Deleted:*\n"
+                      + escape_md(shorten(deleted))
+                  )
+
+              # --------------------------------------------------------
+              # EMPTY CHANGELOG
+              # --------------------------------------------------------
+
+              if not added and not deleted:
+
+                  message += (
+                      "\n\nℹ️ Обычный апдейт версий, "
+                      "без новых/удалённых компонентов\\."
+                  )
+
+              # --------------------------------------------------------
+              # RELEASE LINK
+              # --------------------------------------------------------
+
+              if url:
+
+                  message += (
+                      "\n\n[Открыть релиз на GitHub]("
+                      + escape_url(url)
+                      + ")"
+                  )
+
+              # --------------------------------------------------------
+              # SEND AND SAVE STATE
+              # --------------------------------------------------------
+
+              try:
+
+                  send_telegram(message)
+
+                  # Update only after successful delivery.
+                  state[prefix] = tag
+
+                  temporary = STATE + ".tmp"
+
+                  with open(
+                      temporary,
+                      "w",
+                      encoding="utf-8"
+                  ) as file:
+
+                      json.dump(
+                          state,
+                          file,
+                          indent=2,
+                          ensure_ascii=False
+                      )
+
+                      file.write("\n")
+
+                  os.replace(temporary, STATE)
+
+                  changed += 1
+
+                  log(f"Successfully delivered: {tag}")
+
+              except Exception as error:
+
+                  failed += 1
+
+                  log(
+                      f"FAILED: {tag}: {error}"
+                  )
+
+          # ============================================================
+          # SUMMARY
+          # ============================================================
+
+          log("=" * 60)
+          log("WATCHER SUMMARY")
+          log("=" * 60)
+
+          log(f"Tracked images: {len(PREFIXES)}")
+          log(f"New notifications: {changed}")
+          log(f"Failed notifications: {failed}")
+
+          if failed:
+              log("Watcher finished with errors")
+              sys.exit(1)
+
+          log("Watcher completed successfully")
+
+          PY
+
+      - name: Commit updated watcher state
+        if: always()
+        run: |
+          set -euo pipefail
+
+          STATE=".github/image-watch-state.json"
+
+          git config user.name "image-watch-bot"
+          git config user.email "actions@users.noreply.github.com"
+
+          git add "$STATE"
+
+          if git diff --cached --quiet; then
+            echo "State unchanged. Nothing to commit."
+            exit 0
           fi
+
+          git commit -m "image-watch: update last-seen release tags"
+
+          git push
