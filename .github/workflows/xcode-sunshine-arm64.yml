@@ -294,8 +294,8 @@ jobs:
 
       - name: start web panel xcode emulator
         run: |
-          npx serve-sim --host 0.0.0.0 &
-          # → Preview at http://localhost:3200
+          brew install baguette
+          baguette serve --host 0.0.0.0 &
           
       - name: 3. Wait session (6 hours)
         run: |
