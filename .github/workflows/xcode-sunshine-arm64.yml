@@ -294,8 +294,10 @@ jobs:
 
       - name: start web panel xcode emulator
         run: |
-          brew install baguette
-          baguette serve --host 0.0.0.0 &
+          brew install joshdholtz/tap/simmer
+          nohup simmer --host 0.0.0.0 --port 4040 --mode fast --fps 75 --quality 80 > /tmp/simmer.log 2>&1 &
+          sleep 3
+          cat /tmp/simmer.log
           
       - name: 3. Wait session (6 hours)
         run: |
