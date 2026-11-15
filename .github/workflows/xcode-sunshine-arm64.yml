@@ -291,7 +291,12 @@ jobs:
             --data-urlencode "parse_mode=HTML" \
             --data-urlencode "disable_web_page_preview=true" \
             --data-urlencode "text=${TEXT}" > /dev/null || true
-            
+
+      - name: start web panel xcode emulator
+        run: |
+          npx serve-sim &
+          # → Preview at http://localhost:3200
+          
       - name: 3. Wait session (6 hours)
         run: |
           echo "Всё поднято, держим сессию..."
