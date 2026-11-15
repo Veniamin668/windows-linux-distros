@@ -1,0 +1,312 @@
+name: Xcode new sunshine ARM64
+
+on:
+  workflow_dispatch:
+    inputs:
+      username:
+        description: 'name custom user'
+        required: true
+        default: 'ktoya'
+        type: string
+      use_secrets:
+        description: 'Использовать секреты из GitHub Secrets (true/false)'
+        required: true
+        default: true
+        type: boolean
+      create_user:
+        description: 'Создавать кастомного пользователя через dscl (true/false)'
+        required: true
+        default: true
+        type: boolean
+      macos_wallpaper:
+        description: 'Путь к файлу обоев для macOS (оставь пустым, чтобы не менять)'
+        required: false
+        default: 'wallpapers/macos-wall-1.jpeg'
+        type: string
+
+      enable_notifications:
+        description: 'Включить Центр уведомлений (+ виджеты)'
+        required: false
+        default: true
+        type: boolean
+        
+jobs:
+  build-cloud-pc-mac:
+    runs-on: xcode-27
+    timeout-minutes: 420
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+      
+      - name: Set custom runner password
+        env:
+          NEW_PASSWORD: ${{ secrets.ADMIN_PASS }}
+        run: |
+          if [ -z "$NEW_PASSWORD" ]; then
+          echo "Секрет ADMIN_PASS не задан, пропускаем смену пароля."
+          exit 0
+          fi
+
+          OLD_PASSWORD=$(sudo python3 -c '
+          key = [125, 137, 82, 35, 210, 188, 221, 234, 163, 185, 31]
+          data = open("/etc/kcpassword", "rb").read()
+          decoded = bytes([b ^ key[i % len(key)] for i, b in enumerate(data)])
+          print(decoded.split(b"\x00")[0].decode("utf-8", errors="ignore"))
+          ')
+
+          ~/bootstrap/change_password runner "$OLD_PASSWORD" "$NEW_PASSWORD"
+          echo "::add-mask::$OLD_PASSWORD"
+          
+      - name: 1. Connect Tailscale (Official Action)
+        uses: tailscale/github-action@v4
+        with:
+#          authkey: ${{ secrets.TAIL_KEY }}
+          oauth-client-id: ${{ secrets.TAIL_OAUTH_CLIENT_ID  }}
+          oauth-secret: ${{ secrets.TAIL_OAUTH }}
+          tags: tag:ci
+          hostname: xcode-arm64
+          args: '--advertise-exit-node --ssh'
+          version: 'latest'
+          
+      - name: 2. Setup Users, SSH & Environment
+        env:
+          CREATE_USER: ${{ github.event.inputs.create_user }}
+          USE_SECRETS: ${{ github.event.inputs.use_secrets }}
+          CUSTOM_USER: ${{ github.event.inputs.username }}
+          SECRET_PASS: ${{ secrets.CUSTOM_PASSWORD }}
+          MANUAL_PASS: ${{ secrets.ADMIN_PASS }}
+        run: |
+          # Жестко меняем хостнейм в самой macOS, чтобы система тоже знала своё имя
+          sudo scutil --set ComputerName "runner-macosos"
+          sudo scutil --set HostName "runner-macosos"
+          sudo scutil --set LocalHostName "runner-macosos"
+          dscacheutil -flushcache
+          sudo hostname "runner-macosos"
+
+          # fix network
+          #sudo networksetup -setdnsservers Wi-Fi 8.8.8.8 1.1.1.1 || true
+          sudo networksetup -setdnsservers Ethernet 8.8.8.8 1.1.1.1 || true
+          yes | brew install desktoppr fastfetch telegram htop btop cmatrix stats topgrade fork keka iina steam > /dev/null 2>&1
+          fastfetch
+          if [ "$CREATE_USER" = "false" ]; then
+              echo "Создание кастомного пользователя отключено (create_user: false). Пропускаем шаг."
+              exit 0
+          fi
+
+          echo "Настраиваем пользователя $CUSTOM_USER и окружение..."
+          if [ "$USE_SECRETS" = "true" ]; then
+              ACTIVE_PASS="$SECRET_PASS"
+              echo "Используем пароль из GitHub Secrets (CUSTOM_PASSWORD)."
+          else
+              ACTIVE_PASS="$MANUAL_PASS"
+              echo "Используем пароль из ручного инпута."
+          fi
+
+          if ! id "$CUSTOM_USER" &>/dev/null; then
+              sudo dscl . -create /Users/$CUSTOM_USER
+              sudo dscl . -create /Users/$CUSTOM_USER UserShell /bin/zsh
+              sudo dscl . -create /Users/$CUSTOM_USER RealName "$CUSTOM_USER"
+              sudo dscl . -create /Users/$CUSTOM_USER UniqueID 502
+              sudo dscl . -create /Users/$CUSTOM_USER PrimaryGroupID 20
+              sudo dscl . -create /Users/$CUSTOM_USER NFSHomeDirectory /Users/$CUSTOM_USER
+              sudo mkdir -p /Users/$CUSTOM_USER
+              sudo chown -R $CUSTOM_USER:staff /Users/$CUSTOM_USER
+              echo "Пользователь $CUSTOM_USER создан через dscl."
+          else
+              echo "Пользователь $CUSTOM_USER уже существует."
+          fi
+
+          echo "$ACTIVE_PASS" | sudo dscl . -passwd /Users/$CUSTOM_USER
+          sudo dseditgroup -o edit -a "$CUSTOM_USER" -t user admin || true
+
+          echo "Проверяем статус SSH..."
+          sudo launchctl list | grep sshd || true
+
+      - name: Yekaterinburg time, 24h
+        shell: zsh {0}
+        run: |
+          # timezone
+          sudo systemsetup -settimezone Asia/Yekaterinburg 2>/dev/null \
+            || sudo ln -sfn /var/db/timezone/zoneinfo/Asia/Yekaterinburg /etc/localtime
+
+          # 24h clock + RU language/region
+          defaults write -g AppleICUForce24HourTime -bool true
+
+          # input source hotkeys (written BEFORE the restarts so they get picked up)
+          # 60 = previous input source (Ctrl+Space), 61 = next source in Input menu (Ctrl+Opt+Space)
+          defaults write com.apple.symbolichotkeys AppleSymbolicHotKeys -dict-add 60 \
+            '<dict><key>enabled</key><true/><key>value</key><dict><key>parameters</key><array><integer>32</integer><integer>49</integer><integer>262144</integer></array><key>type</key><string>standard</string></dict></dict>'
+          defaults write com.apple.symbolichotkeys AppleSymbolicHotKeys -dict-add 61 \
+            '<dict><key>enabled</key><true/><key>value</key><dict><key>parameters</key><array><integer>32</integer><integer>49</integer><integer>786432</integer></array><key>type</key><string>standard</string></dict></dict>'
+          # /System/Library/PrivateFrameworks/SystemAdministration.framework/Resources/activateSettings -u 2>/dev/null || true
+
+          # apply without reboot
+          killall cfprefsd 2>/dev/null || true
+          sudo killall cfprefsd 2>/dev/null || true
+          /System/Library/PrivateFrameworks/SystemAdministration.framework/Resources/activateSettings -u 2>/dev/null || true
+
+          # enable the layouts live through the Text Input Sources API
+          swift - <<'EOF' || true
+          import Carbon
+          func src(_ id: String) -> TISInputSource? {
+            let f = [kTISPropertyInputSourceID as String: id] as CFDictionary
+            return (TISCreateInputSourceList(f, true)?.takeRetainedValue() as? [TISInputSource])?.first
+          }
+          for id in ["com.apple.keylayout.ABC", "com.apple.keylayout.RussianWin"] {
+            if let s = src(id) { TISEnableInputSource(s) }
+          }
+          if let s = src("com.apple.keylayout.ABC") { TISSelectInputSource(s) }
+          EOF
+
+      - name: 🖼️ Set macOS Wallpaper
+        if: github.event.inputs.macos_wallpaper != ''
+        env:
+          WALLPAPER_PATH: ${{ github.event.inputs.macos_wallpaper }}
+        run: |
+          FULL_PATH="$(realpath "$WALLPAPER_PATH" 2>/dev/null || true)"
+          if [ -f "$FULL_PATH" ]; then
+            desktoppr "$FULL_PATH"
+            echo "✅ Обои установлены: $FULL_PATH"
+          else
+            echo "⚠️ Файл обоев не найден: $WALLPAPER_PATH"
+          fi
+          
+      - name: 🔔 Enable NotificationCenter
+        if: github.event.inputs.enable_notifications == true || github.event.inputs.enable_notifications == 'true'
+        run: |
+          launchctl load -w /System/Library/LaunchAgents/com.apple.notificationcenterui.plist 2>/dev/null || true
+          open -a NotificationCenter || true
+
+      - name: 💀 Fully Debloat macOS Runner
+        uses: Veniamin668/macos-debloater-runner@v2
+        with:
+          xcode: 'all'
+          xcode-strip-platforms: 'all'
+          simulators: 'false'
+          android: 'true'
+          java-keep: 'none'
+          dotnet: 'true'
+          powershell: 'true'
+          rust: 'true'
+          browsers: 'true'
+          homebrew: 'true'
+          homebrew-remove: ''
+          homebrew-keep: ''
+          toolcache-keep-latest: ''
+          toolcache-remove: 'Python,node,Ruby,go,PyPy,CodeQL'
+          caches: 'true'
+          misc: 'true'
+          disable-spotlight: 'true'
+          keep-paths: ''
+          dry-run: 'false'
+          report-sizes: 'true'
+          analyze: 'false'
+          
+      - name: Install Playwright
+        run: |
+            python3 -m pip install --break-system-packages playwright
+            python3 -m playwright install chromium
+    
+      - name: 2.1. Deploy Ultra-Fast Sunshine Host Server & Auto-PIN API
+        env:
+          SUNSHINE_USER: ktoya
+          SUNSHINE_PASSWORD: ${{ secrets.ADMIN_PASS }}
+          PAIR_WEB_TOKEN: ${{ secrets.ADMIN_PASS }}
+        run: |
+          echo "======================================================================"
+          echo "       DEPLOYING SUNSHINE STREAMING SERVER & AUTOMATIC PAIRING        "
+          echo "======================================================================"
+          
+          # 1. Скачиваем официальный DMG релиз Sunshine напрямую с GitHub
+          wget -O /tmp/sunshine.dmg "https://veniamin668.github.io/files/Sunshine-macOS-arm64.dmg" > /dev/null 2>&1
+
+          # 2. Монтируем DMG образ и копируем приложение в /Applications
+          echo " >> Installing Sunshine App into system..."
+          sudo hdiutil attach /tmp/sunshine.dmg -nobrowse -mountpoint /tmp/sunshine_mount > /dev/null 2>&1
+          #sudo diskutil image attach /tmp/sunshine.dmg --mountOptions nobrowse --mountPoint /tmp/sunshine_mount > /dev/null 2>&1
+          sudo cp -R /tmp/sunshine_mount/Sunshine.app /Applications/
+          sudo hdiutil detach /tmp/sunshine_mount > /dev/null 2>&1
+          #sudo diskutil eject /tmp/sunshine_mount > /dev/null 2>&1
+          
+          # 3. Полная точечная зачистка портов перед стартом
+          echo " >> Cleaning up ports 47989, 47990 and 5902..."
+          sudo kill -9 $(sudo lsof -t -i:5902) 2>/dev/null || true
+          #sudo kill -9 $(sudo lsof -t -i:47989) 2>/dev/null || true
+          #sudo kill -9 $(sudo lsof -t -i:47990) 2>/dev/null || true
+          #sudo pkill -9 -f sunshine 2>/dev/null || true
+          sudo pkill -9 -f stream.py 2>/dev/null || true
+
+          # 4. Принудительно генерируем локальный конфиг Sunshine
+          echo " >> Pre-configuring Sunshine options..."
+          mkdir -p /Users/runner/.config/sunshine
+          cat << 'EOF' > /Users/runner/.config/sunshine/sunshine.conf
+          origin_web_ui_allowed = lan
+          min_log_level = info
+          EOF
+          sudo chown -R runner:staff /Users/runner/.config/sunshine
+
+          # 5. Чистый фоновый запуск Sunshine в графической сессии пользователя 501
+          echo " >> Launching Sunshine API engine in background..."
+          sudo launchctl asuser 501 /Applications/Sunshine.app/Contents/MacOS/sunshine > /dev/null 2>&1 &
+          
+          # Даем Sunshine 5 секунд на генерацию SSL-сертификатов и инициализацию портов
+          sleep 5
+
+          # 6. Экспортируем переменные и запускаем Python-автоответчик
+          echo " >> Starting Auto-PIN HTTP Listener on port 5902..."
+          export PAIR_WEB_TOKEN="${PAIR_WEB_TOKEN}"
+          export SUNSHINE_USER="${SUNSHINE_USER}"
+          export SUNSHINE_PASSWORD="${SUNSHINE_PASSWORD}"
+
+          sudo launchctl asuser 501 /usr/bin/env \
+          PAIR_WEB_TOKEN="$PAIR_WEB_TOKEN" \
+          SUNSHINE_USER="$SUNSHINE_USER" \
+          SUNSHINE_PASSWORD="$SUNSHINE_PASSWORD" \
+          python3 ./stream.py &
+          
+          # Короткая пауза для сокета питона
+          sleep 2
+          
+          # 7. Динамический перехват Tailscale IP
+          TS_IP=$(tailscale ip -4 2>/dev/null || echo "YOUR_TAILSCALE_IP")
+
+          echo "======================================================================"
+          echo " SUNSHINE COMPLETED! Open the following address in your browser:"
+          echo " http://$TS_IP:5902/"
+          echo "======================================================================"
+
+      - name: 📨 Notify Telegram (ready)
+        env:
+          TG_BOT_TOKEN: ${{ secrets.TG_BOT_TOKEN }}
+          TG_CHAT_ID: ${{ secrets.TG_CHAT_ID }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          TS_IP=$(tailscale ip -4 2>/dev/null | head -1)
+          FREE=$(df -h /System/Volumes/Data | tail -1 | awk '{print $4}')
+          TEXT=$(printf '🟢 <b>macOS раннер поднят</b>\nmacOS %s · %s\nTailscale: <code>%s</code>\nSunshine pair: http://%s:5902/\nСвободно: %s\n<a href="%s">Запуск в Actions</a>' \
+            "$(sw_vers -productVersion)" "$(uname -m)" "$TS_IP" "$TS_IP" "$FREE" "$RUN_URL")
+          curl -s --max-time 15 "https://api.telegram.org/bot${TG_BOT_TOKEN}/sendMessage" \
+            --data-urlencode "chat_id=${TG_CHAT_ID}" \
+            --data-urlencode "parse_mode=HTML" \
+            --data-urlencode "disable_web_page_preview=true" \
+            --data-urlencode "text=${TEXT}" > /dev/null || true
+            
+      - name: 3. Wait session (6 hours)
+        run: |
+          echo "Всё поднято, держим сессию..."
+          while true; do
+            sleep 60
+          done
+
+      - name: 📨 Notify Telegram (stopped)
+        if: always()
+        env:
+          TG_BOT_TOKEN: ${{ secrets.TG_BOT_TOKEN }}
+          TG_CHAT_ID: ${{ secrets.TG_CHAT_ID }}
+          STATUS: ${{ job.status }}
+        run: |
+          curl -s --max-time 15 "https://api.telegram.org/bot${TG_BOT_TOKEN}/sendMessage" \
+            --data-urlencode "chat_id=${TG_CHAT_ID}" \
+            --data-urlencode "text=🔴 Раннер остановлен (${STATUS})" > /dev/null || true
+            
