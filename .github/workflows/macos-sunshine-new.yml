@@ -1,4 +1,4 @@
-name: MACOSOS new sunshine ARM64
+name: MACOSOS new sunshine INTEL Runner
 
 on:
   workflow_dispatch:
