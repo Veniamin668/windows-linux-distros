@@ -360,8 +360,6 @@ class SunshineBrowser:
                 }:
                     continue
 
-                # A submit-type control is safe only if it is not
-                # explicitly identified as a cancel/close action.
                 return candidate
 
             except Exception:
@@ -1070,12 +1068,23 @@ def main():
             "Check the preceding logs."
         )
 
-    class PairingServer(socketserver.TCPServer):
+    # --------------------------------------------------------
+    # THREADED HTTP SERVER
+    # --------------------------------------------------------
+
+    class PairingServer(
+        socketserver.ThreadingMixIn,
+        socketserver.TCPServer,
+    ):
         allow_reuse_address = True
+        daemon_threads = True
+        block_on_close = False
+        request_queue_size = 64
 
     try:
         with PairingServer((HOST, PORT), PairHandler) as server:
             log(f"[Panel] Listening on http://{HOST}:{PORT}/")
+            log("[Panel] Threaded HTTP server enabled.")
             log("[Panel] Ready.")
             server.serve_forever()
 
