@@ -5,7 +5,9 @@ import hmac
 import http.server
 import json
 import os
+import queue
 import re
+import traceback
 import socketserver
 import ssl
 import threading
@@ -225,7 +227,6 @@ class SunshineBrowser:
                 timeout=45000,
             )
 
-            # Original Welcome setup flow is intentionally preserved.
             if self.is_welcome():
                 self.configure_welcome()
 
@@ -279,7 +280,6 @@ class SunshineBrowser:
 
     def _find_submit_button(self):
         """
-        IMPORTANT:
         Never select the first arbitrary button in the form.
         Sunshine may render Cancel before Send.
 
@@ -298,7 +298,6 @@ class SunshineBrowser:
         if form.count() == 0:
             raise RuntimeError("Sunshine PIN form was not found.")
 
-        # First choice: exact visible Send button.
         for selector in (
             "button",
             "input[type='submit']",
@@ -323,15 +322,12 @@ class SunshineBrowser:
                         )
                     ).strip().lower()
 
-                    if label == "send":
-                        if candidate.is_enabled():
-                            return candidate
+                    if label == "send" and candidate.is_enabled():
+                        return candidate
 
                 except Exception:
                     continue
 
-        # Second choice: submit controls, but explicitly reject
-        # Cancel/Close and controls with non-submit types.
         candidates = form.locator(
             "button[type='submit'], input[type='submit']"
         )
@@ -375,7 +371,6 @@ class SunshineBrowser:
     # --------------------------------------------------------
 
     def configure_welcome(self):
-        # Original Welcome setup behavior preserved.
         log("[Welcome] Initial Sunshine setup detected.")
 
         self.page.locator("input:visible").first.wait_for(
@@ -515,7 +510,6 @@ class SunshineBrowser:
         if name_field.input_value() != name:
             raise RuntimeError("Sunshine did not retain the device name.")
 
-        # Select Send explicitly; never click the first generic button.
         submit_button = self._find_submit_button()
 
         if not submit_button.is_enabled():
@@ -573,7 +567,6 @@ class SunshineBrowser:
                 f"{type(error).__name__}: {error}"
             )
 
-            # Never refresh the page while a pairing request is pending.
             return False, (
                 "Не удалось получить ожидаемый ответ от Sunshine. "
                 "Проверь актуальность PIN и логи Actions."
@@ -609,7 +602,6 @@ class SunshineBrowser:
 
 
 SUNSHINE_BROWSER = SunshineBrowser()
-atexit.register(SUNSHINE_BROWSER.close)
 
 
 # ============================================================
@@ -841,6 +833,123 @@ SUNSHINE = SunshineClient()
 
 
 # ============================================================
+# PLAYWRIGHT WORKER
+# ============================================================
+
+class BrowserWorker:
+    """Owns all synchronous Playwright objects in one dedicated thread.
+
+    Playwright's sync API is greenlet/thread-affine. The HTTP server may
+    create as many request threads as needed, but every operation touching
+    SunshineBrowser and the Sunshine pairing flow is dispatched here.
+    """
+
+    def __init__(self):
+        self.tasks = queue.Queue()
+        self.thread = threading.Thread(
+            target=self._run,
+            name="playwright-owner",
+            daemon=True,
+        )
+        self.started = threading.Event()
+        self.stopped = threading.Event()
+        self._start_lock = threading.Lock()
+
+    def start(self):
+        with self._start_lock:
+            if not self.thread.is_alive() and not self.stopped.is_set():
+                self.thread.start()
+
+        if not self.started.wait(timeout=15):
+            raise RuntimeError("Playwright worker did not start in time.")
+
+        if self.stopped.is_set():
+            raise RuntimeError("Playwright worker has already stopped.")
+
+    def _run(self):
+        log(f"[BrowserWorker] Started; thread_id={threading.get_ident()}")
+        self.started.set()
+
+        while True:
+            task = self.tasks.get()
+
+            if task is None:
+                break
+
+            function, args, kwargs, completed, result = task
+
+            try:
+                result["value"] = function(*args, **kwargs)
+
+            except BaseException as error:
+                result["error"] = error
+                result["traceback"] = traceback.format_exc()
+
+            finally:
+                completed.set()
+
+        # Playwright is closed by the same thread that created it.
+        try:
+            SUNSHINE_BROWSER.close()
+
+        except Exception as error:
+            log(
+                f"[BrowserWorker] Cleanup failed: "
+                f"{type(error).__name__}: {error}"
+            )
+
+        self.stopped.set()
+        log("[BrowserWorker] Stopped.")
+
+    def call(self, function, *args, **kwargs):
+        self.start()
+
+        if threading.current_thread() is self.thread:
+            return function(*args, **kwargs)
+
+        completed = threading.Event()
+        result = {}
+
+        self.tasks.put(
+            (function, args, kwargs, completed, result)
+        )
+
+        completed.wait()
+
+        if "error" in result:
+            log(
+                "[BrowserWorker] Task traceback:\n"
+                + result.get("traceback", "")
+            )
+            raise result["error"]
+
+        return result.get("value")
+
+    def stop(self):
+        if self.stopped.is_set():
+            return
+
+        if not self.thread.is_alive():
+            self.stopped.set()
+            return
+
+        self.tasks.put(None)
+
+        if threading.current_thread() is not self.thread:
+            self.thread.join(timeout=20)
+
+            if self.thread.is_alive():
+                log(
+                    "[BrowserWorker] WARNING: "
+                    "worker did not stop within 20s."
+                )
+
+
+BROWSER_WORKER = BrowserWorker()
+atexit.register(BROWSER_WORKER.stop)
+
+
+# ============================================================
 # WEB HANDLER
 # ============================================================
 
@@ -989,7 +1098,11 @@ class PairHandler(http.server.BaseHTTPRequestHandler):
         try:
             log("[Panel] Starting pairing flow.")
 
-            ok, message = SUNSHINE.pair(pin, name)
+            ok, message = BROWSER_WORKER.call(
+                SUNSHINE.pair,
+                pin,
+                name,
+            )
 
             log(
                 f"[Panel] Pairing finished: ok={ok}; "
@@ -1005,6 +1118,11 @@ class PairHandler(http.server.BaseHTTPRequestHandler):
             log(
                 f"[Panel] Pairing error: "
                 f"{type(error).__name__}: {error}"
+            )
+
+            log(
+                "[Panel] Pairing traceback:\n"
+                + traceback.format_exc()
             )
 
             self.send_json(500, {
@@ -1044,12 +1162,15 @@ def main():
     log("[Config] Headless Chromium enabled.")
     log("[Config] PINs and credentials are not logged.")
 
+    # Start the dedicated Playwright owner thread before any browser use.
+    BROWSER_WORKER.start()
+
     setup_ok = False
 
     for attempt in range(1, 16):
         log(f"[Sunshine] Setup/authentication check {attempt}/15")
 
-        if SUNSHINE.ensure_setup():
+        if BROWSER_WORKER.call(SUNSHINE.ensure_setup):
             setup_ok = True
             break
 
@@ -1061,16 +1182,12 @@ def main():
             time.sleep(POLL_INTERVAL)
 
     if not setup_ok:
-        SUNSHINE_BROWSER.close()
+        BROWSER_WORKER.stop()
 
         raise SystemExit(
             "Sunshine initial setup/authentication failed. "
             "Check the preceding logs."
         )
-
-    # --------------------------------------------------------
-    # THREADED HTTP SERVER
-    # --------------------------------------------------------
 
     class PairingServer(
         socketserver.ThreadingMixIn,
@@ -1085,14 +1202,16 @@ def main():
         with PairingServer((HOST, PORT), PairHandler) as server:
             log(f"[Panel] Listening on http://{HOST}:{PORT}/")
             log("[Panel] Threaded HTTP server enabled.")
+            log("[Panel] Playwright isolated in dedicated worker thread.")
             log("[Panel] Ready.")
+
             server.serve_forever()
 
     except KeyboardInterrupt:
         log("[Panel] Shutting down.")
 
     finally:
-        SUNSHINE_BROWSER.close()
+        BROWSER_WORKER.stop()
 
 
 if __name__ == "__main__":
